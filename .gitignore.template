@@ -29,3 +29,6 @@
 #    committing it is what lets a clone reach a working environment
 !.envrcs/.env.*.template
 !*.sops-encrypted
+# ...except the kata token bundle, which holds your own identity token
+# (.envrcs/README.md, "kata"): encrypted, but one fixed path per teammate.
+.envrcs/.env.secrets.kata.sops-encrypted

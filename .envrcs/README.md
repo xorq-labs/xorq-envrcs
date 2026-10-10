@@ -47,9 +47,11 @@ has a `.gitignore`, which is the normal case for a repo adopting this layout.
 /result
 /result-*
 
-# tracked exceptions, and they must come last
+# tracked exceptions, and they must come last (one re-ignore after them)
 !.envrcs/.env.*.template
 !*.sops-encrypted
+# ...except your own kata identity token bundle
+.envrcs/.env.secrets.kata.sops-encrypted
 ```
 
 This is the whole of `.gitignore.template` minus its self-ignore line; if the
@@ -596,7 +598,16 @@ runs.
 The token is the `KATA_TEAM_TOKEN` key of a sops bundle:
 `.envrcs/.env.secrets.kata.sops-encrypted`, or the one `kata_team_bundle`
 names in `.envrc.secrets`. Do not also `use` that bundle — see
-[the ambient rule](#per-call-secrets-sops_wrap).
+[the ambient rule](#per-call-secrets-sops_wrap). It is your own identity
+token, so the bundle is yours alone and must stay untracked. A `.gitignore`
+generated from the current template ignores the default name; the root
+`.envrc` never rewrites an existing one, so a checkout older than that line
+needs it added by hand (`git check-ignore -v` on the bundle tells you), and
+so does any other name you give `kata_team_bundle`, which
+`!*.sops-encrypted` would otherwise re-include. A new worktree does not
+have the bundle until you add a
+`symlink	.envrcs/.env.secrets.kata.sops-encrypted` line to your
+`.envrcs/.worktree-manifest`, which is per-checkout and untracked.
 
 A token that an earlier version of this fragment read from an ambient bundle
 moves out of it into this one; leaving it there is what the ambient rule
