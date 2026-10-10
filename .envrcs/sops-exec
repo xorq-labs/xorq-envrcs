@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# sops_wrap wrapper (.envrcs/.envrc.sops) — this line is the marker the PATH
+# walk below skips, so keep it second. sops_wrap links
+# $(direnv_layout_dir)/sops-bin/<tool>/<tool> here and writes ./.sops-wrap
+# beside that link: the bundle, the ENV=KEY map, and the --set values.
+# .envrcs/README.md, "Per-call secrets", has why each step is shaped so.
+#
+# Sourced rather than run, as .envrc.sops does, it only defines the two
+# functions below, so use_sops and every call share one copy of the rule.
+
+# The gpg rule, README "Cold gpg cache without a terminal": with no tty on
+# any fd, sops runs gpg through sops-gpg-no-pinentry in $1, which adds
+# --pinentry-mode error to the user's own gpg; else the user's gpg as is.
+# Sets _sops_user_gpg and _sops_gpg for _sops_run, in the caller's scope —
+# not printed, because a caller would read it through $(...), where fd 1 is
+# always a pipe and the test would see no tty in a terminal. The user's gpg
+# is read before anything here sets SOPS_GPG_EXEC.
+_sops_pick_gpg() {
+    _sops_user_gpg=${SOPS_GPG_EXEC:-gpg}
+    _sops_gpg=$_sops_user_gpg
+    if ! [ -t 0 ] && ! [ -t 1 ] && ! [ -t 2 ]; then
+        _sops_gpg=$1/sops-gpg-no-pinentry
+    fi
+}
+
+# sops under the rule _sops_pick_gpg chose; safe inside $(...). The gpg is
+# a prefix, not an export, so nothing else inherits it.
+_sops_run() {
+    SOPS_GPG_EXEC=$_sops_gpg SOPS_WRAP_GPG=$_sops_user_gpg sops "$@"
+}
+
+(return 0 2>/dev/null) && return 0
+
+set -euo pipefail
+# An exported SHELLOPTS=xtrace would trace every assignment below, values
+# included, to stderr.
+set +x
+
+tool=${0##*/}
+self_dir=$(cd "$(dirname "$0")" && pwd -P)
+conf=$self_dir/.sops-wrap
+if ! [ -f "$conf" ]; then
+    echo "$tool: no $conf; \`direnv reload\` rewrites it" >&2
+    exit 1
+fi
+# Sets envrcs, bundle, map and fixed. Written by sops_wrap, %q-quoted, in a
+# mode 700 directory.
+# shellcheck source=/dev/null
+. "$conf"
+
+# The real tool is the first on PATH that is not a sops_wrap wrapper. This
+# checkout's is skipped by inode (-ef follows the link to this file): a PATH
+# entry can reach it through a symlink, a relative path or a trailing slash,
+# which a string match would miss. Another checkout's links to its own copy
+# of this file, so it is skipped by the marker line, or two of them on one
+# PATH would exec each other forever.
+real=
+while IFS= read -r -d: dir || [ -n "$dir" ]; do
+    cand=${dir:-.}/$tool
+    [ -f "$cand" ] && [ -x "$cand" ] || continue
+    [ "$cand" -ef "$0" ] && continue
+    case $(sed -n '2{p;q}' "$cand" 2>/dev/null) in
+    '# sops_wrap wrapper '*) continue ;;
+    esac
+    real=$cand
+    break
+done <<<"$PATH:"
+if [ -z "$real" ]; then
+    echo "$tool: no $tool on PATH besides sops_wrap wrappers ($0)" >&2
+    exit 127
+fi
+
+_sops_pick_gpg "$envrcs"
+
+# One decrypt per distinct KEY. --extract hands back that one value, so no
+# other key of the bundle leaves sops. Values stay unexported until every
+# decrypt is done — sops and gpg are children of this script — and are
+# exported with the builtin, never as `env NAME=value` arguments, which
+# /proc/<pid>/cmdline would show to every user on the host.
+envs=() keys=() vals=()
+for pair in $map; do
+    env_name=${pair%%=*} key=${pair#*=} value='' i=0
+    while [ $i -lt ${#keys[@]} ]; do
+        if [ "${keys[$i]}" = "$key" ]; then value=${vals[$i]}; break; fi
+        i=$((i + 1))
+    done
+    if [ $i -eq ${#keys[@]} ]; then
+        if ! value=$(_sops_run --decrypt --extract "[\"$key\"]" --input-type dotenv --output-type binary "$bundle"); then
+            echo "$tool: could not decrypt $key from $bundle; if the gpg cache is cold, run \`$tool\` once in a terminal" >&2
+            exit 1
+        fi
+        # One matching pair of quotes off: README, "Quotes".
+        case $value in
+        "'"*"'") value=${value#\'}; value=${value%\'} ;;
+        '"'*'"') value=${value#\"}; value=${value%\"} ;;
+        esac
+        if [ -z "$value" ]; then
+            echo "$tool: $key in $bundle is empty" >&2
+            exit 1
+        fi
+        keys+=("$key") vals+=("$value")
+    fi
+    envs+=("$env_name=$value")
+done
+# shellcheck disable=SC2163 # exporting the NAME=value string is the point
+for assign in ${fixed[@]+"${fixed[@]}"} "${envs[@]}"; do export "$assign"; done
+exec "$real" "$@"

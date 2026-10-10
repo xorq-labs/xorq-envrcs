@@ -7,6 +7,8 @@ direnv configuration split into composable fragments, sourced from the root `.en
 | File | Purpose |
 |---|---|
 | `.envrc.sops` | Defines `use_sops` and `use_sops_if_exists` for decrypting secrets into the environment, and `sops_wrap` for handing them to one command per call |
+| `sops-exec` | The wrapper `sops_wrap` links each wrapped tool to; also holds the no-tty gpg rule every sops call here uses |
+| `sops-gpg-no-pinentry` | The gpg a sops call runs with no tty: yours, with `--pinentry-mode error` |
 | `.envrc.nix-config` | Bootstraps nix-direnv; where to `watch_file` imported nix modules |
 | `.envrc.secrets.template` | Decrypts `.env.secrets.demo.sops-encrypted`; shows how to add further bundles |
 | `.envrc.user.template` | Default user env: loads `.env.local`; both toolchain fragments commented, pick one; kenn layer commented, optional |
@@ -428,15 +430,22 @@ where an `env | grep` has put tokens into transcripts more than once. For a
 secret only one command needs, `sops_wrap` keeps it out of the environment:
 
 ```sh
-sops_wrap <tool> <bundle> ENV=KEY [KEY ...]
+sops_wrap [--set NAME=VALUE ...] <tool> <bundle> ENV=KEY [KEY ...]
 ```
 
-writes a wrapper named `<tool>` into `$(direnv_layout_dir)/sops-bin/` and
-`PATH_add`s that directory. Each call decrypts each listed `KEY` with
+links `$(direnv_layout_dir)/sops-bin/<tool>/<tool>` to the tracked
+`sops-exec`, writes the bundle path, the `ENV=KEY` map and the `--set`
+values to `.sops-wrap` beside the link, and `PATH_add`s that directory.
+Each call decrypts each listed `KEY` with
 `sops --decrypt --extract`, so no other key of the bundle leaves sops, sets it
 as `ENV` (`KEY` alone means `KEY=KEY`), and `exec`s the real `<tool>`. The
 shell never holds the value, so no listing of its environment can show it.
-`.envrc.kata` is the one caller here.
+Each `--set` is a plain value baked into the wrapper and set on every call,
+for a setting the secret must never go out without — `.envrc.kata`, the one
+caller here, bakes in the server its token belongs to. A listed key missing
+from the bundle fails `sops_wrap` and wires nothing. That check reads key
+names, which a sops dotenv bundle keeps in plaintext, so a reload decrypts
+nothing for `sops_wrap`; a bundle that does not decrypt fails per call.
 
 **What it does not do.** Anyone with your uid and your unlocked gpg-agent can
 still run `sops --decrypt` on the bundle, or read `/proc/<pid>/environ` while
@@ -445,27 +454,41 @@ narrows accidents, not adversaries. It exports the values with the shell
 builtin rather than `env NAME=value tool`: argv, unlike the environment, is
 readable by every user on the host through `/proc/<pid>/cmdline` and `ps`.
 
-**Where the wrapper lives.** The layout dir, because the wrapper holds neither
-a secret nor a GC root: it is regenerated on every reload, `rm -rf .direnv`
-plus a reload rebuilds it, and a worktree builds its own on `direnv allow`
-with no `.worktree-symlinks` entry. The bundle path is baked in absolute, so
-the wrapper works from a directory direnv never loaded. The directory and
-files are mode 700: nothing secret, but an executable first on PATH.
+**Where the wrapper lives.** The code is `.envrcs/sops-exec`, tracked; only
+the link and its `.sops-wrap` data are per-checkout, in the layout dir,
+because they hold neither a secret nor a GC root: each reload rewrites the
+data, `rm -rf .direnv` plus a reload rebuilds both, and a worktree builds its
+own on `direnv allow` with no `.worktree-symlinks` entry for them; an
+untracked bundle still needs one. Each tool gets its own directory, and only
+the directories wired this reload are on PATH, so a tool you stop wrapping
+drops off PATH on the next reload. The bundle is always named — never the
+`use_sops` default — and stored absolute, so the wrapper works from a
+directory direnv never loaded. The directories and data are owner-only:
+nothing secret, but an executable first on PATH. That is no stronger than
+the checkout's own permissions: whoever can write `.direnv` or the checkout
+can replace `sops-bin`, as they could `.envrc`.
 
 **Order.** `PATH_add` prepends, so call `sops_wrap` after whatever brings the
 tool onto PATH — `.envrc.kata` after `.envrc.user.kenn`. The wrapper finds
-the real tool by walking PATH past itself, comparing by inode, so order
-decides which one the shell sees, not which one the wrapper runs.
+the real tool by walking PATH past this checkout's wrapper (by inode) and
+any other checkout's (by the marker line `sops-exec` carries), so order
+decides which one the shell sees, not which one the wrapper runs. The end
+of every reload checks it: for each tool wrapped that reload, the root
+`.envrc` logs an error if the tool no longer resolves to its wrapper —
+something sourced later put the real one ahead — and names the fix. It
+reports and leaves PATH as it is.
 
 **Cold gpg cache without a terminal.** gpg hands the passphrase prompt to
 whatever `GPG_TTY` names, and an agent's Bash tool inherits the `GPG_TTY` of
 the terminal that launched it, so a cold cache would draw a prompt there and
-wait forever. When no fd is a tty, the wrapper runs gpg with
-`--pinentry-mode error` and the call fails in milliseconds, naming the fix:
-run the tool once in a terminal, or `direnv reload` there. `sops_wrap`
-decrypts at reload to check that every listed key exists, reducing the
-plaintext to key names, and that decrypt is what keeps the cache warm for the
-agent shells that come later.
+wait forever. When no fd is a tty, every sops call here — `use_sops` at
+reload and the wrapper per call — runs gpg through `sops-gpg-no-pinentry`,
+which adds `--pinentry-mode error` to your own `SOPS_GPG_EXEC` (default
+`gpg`), so a cold cache fails in milliseconds. One function, `_sops_pick_gpg`
+in `sops-exec`, makes that choice for all of them, from outside any `$(...)`,
+where stdout would always look like a pipe. The fix it names: run the tool
+once in a terminal, which warms the cache for the agent shells after it. A
+`use`d bundle under the same key warms it at every terminal reload.
 
 **Quotes.** sops stores dotenv values verbatim, quotes included, where
 `direnv dotenv` strips and expands them. The wrapper strips one matching pair
@@ -575,10 +598,17 @@ The token is the `KATA_TEAM_TOKEN` key of a sops bundle:
 names in `.envrc.secrets`. Do not also `use` that bundle — see
 [the ambient rule](#per-call-secrets-sops_wrap).
 
+A token that an earlier version of this fragment read from an ambient bundle
+moves out of it into this one; leaving it there is what the ambient rule
+forbids, and the fragment unsets it anyway.
+
 **Two names out, both per call.** The wrapper sets `KATA_AUTH_TOKEN`, which
 a `KATA_SERVER` route reads, and `KATA_TEAM_TOKEN`, which a daemon catalog
 entry in `~/.kata/config.toml` names with `token_env`, so `kata --daemon
-team` works too. Neither is left in the shell: the fragment unsets both
+team` works too. It also sets `KATA_SERVER` and
+`KATA_TRUST_PRIVATE_NETWORK` itself (`--set`), so the token never goes out
+without the server it belongs to, whatever the caller did to `KATA_SERVER`.
+Neither token name is left in the shell: the fragment unsets both
 whether or not it wired anything, because one inherited from outside would
 bypass the wrapper, and `KATA_AUTH_TOKEN` overrides every daemon's token.
 
@@ -593,8 +623,8 @@ well-formed URL to the wrong host passes kata and any pattern check alike.
 The refusal suggests `KATA_ALLOW_INSECURE=1`: fix the value instead, since
 that is the variable the fragment removes.
 
-**Checking it.** `command -v kata` names `.direnv/sops-bin/kata`, and
-`compgen -e | grep -c TOKEN` is 0. `kata federation identity --json` sends the
+**Checking it.** `command -v kata` names `.direnv/sops-bin/kata/kata`, and
+`compgen -e | grep -cx 'KATA_\(AUTH\|TEAM\)_TOKEN'` is 0. `kata federation identity --json` sends the
 token and reports the actor it authenticated; `kata health` sends none, so it
 passes even where the token would be refused.
 
@@ -622,7 +652,7 @@ complains. `uv` or `nix` only if you enable that toolchain fragment.
 — those two exist so *this* repo demonstrates itself. Leaving them out is
 safe: the demo line in `.envrc.secrets.template` watches a bundle that isn't
 there and no-ops. The templates are optional too: leave out
-`.envrc.secrets.template` (with `.envrc.sops` and the demo files) if you have
+`.envrc.secrets.template` (with `.envrc.sops`, `sops-exec`, `sops-gpg-no-pinentry` and the demo files) if you have
 no sops secrets, or `.gitignore.template` if you already keep a
 `.gitignore` of your own — see
 [Auto-create](#auto-create-and-how-to-disable-a-fragment).

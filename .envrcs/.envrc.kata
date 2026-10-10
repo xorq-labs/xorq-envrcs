@@ -10,7 +10,8 @@ has sops_wrap || source_env .envrc.sops
 
 if [ -z "${KATA_TEAM_SERVER:-}" ]; then
     log_error "kata here is not set up for the team server: KATA_TEAM_SERVER unset or empty"
-elif sops_wrap kata "${kata_team_bundle:-.env.secrets.kata.sops-encrypted}" \
+elif sops_wrap --set KATA_SERVER="$KATA_TEAM_SERVER" --set KATA_TRUST_PRIVATE_NETWORK=1 \
+    kata "${kata_team_bundle:-.env.secrets.kata.sops-encrypted}" \
     KATA_AUTH_TOKEN=KATA_TEAM_TOKEN KATA_TEAM_TOKEN; then
     # KATA_TRUST_PRIVATE_NETWORK lets kata send the token over plain http to
     # any literal private IP (the tailnet's is in 100.64.0.0/10), never to a
@@ -18,9 +19,13 @@ elif sops_wrap kata "${kata_team_bundle:-.env.secrets.kata.sops-encrypted}" \
     # The token itself is never exported: the wrapper decrypts it per call
     # and sets KATA_AUTH_TOKEN (what a KATA_SERVER route reads) and
     # KATA_TEAM_TOKEN (what a daemon catalog's token_env names) for that one
-    # kata process.
+    # kata process, with the server baked in beside it, so a caller that
+    # drops or blanks KATA_SERVER cannot send the token to a local daemon.
+    # The exports are for everything else that reads them.
     export KATA_SERVER=$KATA_TEAM_SERVER KATA_TRUST_PRIVATE_NETWORK=1
     unset KATA_ALLOW_INSECURE
+else
+    log_error "kata here is not set up for the team server; the token bundle is .envrcs/.env.secrets.kata.sops-encrypted, or the one kata_team_bundle names in .envrc.secrets (a token still in an ambient bundle moves out: .envrcs/README.md, \"kata\")"
 fi
 # sops_wrap logs its own reason when it fails, and then KATA_SERVER is not
 # set. Either way, no ambient token: one inherited from outside — a global
