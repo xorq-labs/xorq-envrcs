@@ -112,6 +112,14 @@ _sops_globalize() {
     printf '%s' "$_sops_out"
 }
 
+# This directory, absolute, for the tracked helpers beside this file. direnv
+# sources a fragment as ./name from its own directory, so this resolves.
+_sops_envrcs=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+# Defines _sops_pick_gpg and _sops_run, the one no-tty rule for every sops
+# call here.
+# shellcheck source=sops-exec
+. "$_sops_envrcs/sops-exec"
+
 # Shared default bundle path, so a bare `use sops` / `use sops_if_exists` is
 # not a no-op. Fails loudly when direnv_root is unset: this fragment expects
 # to be sourced from the root .envrc, and without it the default would
@@ -146,7 +154,11 @@ use_sops() {
     # so fixing it (or the key) retriggers the reload.
     watch_file "$_sops_path"
 
-    _sops_decrypted=$(sops --decrypt --input-type dotenv --output-type dotenv "$_sops_path") || {
+    # With no tty, fail fast rather than hang on a pinentry: sops-exec,
+    # _sops_pick_gpg. Picked out here, outside the $(...).
+    local _sops_user_gpg _sops_gpg
+    _sops_pick_gpg "$_sops_envrcs"
+    _sops_decrypted=$(_sops_run --decrypt --input-type dotenv --output-type dotenv "$_sops_path") || {
         log_error "sops --decrypt failed for $_sops_path"
         return 1
     }
@@ -182,4 +194,146 @@ use_sops_if_exists() {
     if [ -f "$_sops_path" ]; then
         use_sops "$_sops_path" "${@:2}"
     fi
+}
+
+# Per-call secrets: the alternative to use_sops for a secret only one
+# command needs. `sops_wrap [--set NAME=VALUE]... <tool> <bundle> ENV=KEY...`
+# links $(direnv_layout_dir)/sops-bin/<tool>/<tool> to the tracked
+# sops-exec, writes what that call needs beside the link, and PATH_adds that
+# directory. Each call decrypts the listed KEYs, sets them as the listed ENV
+# names, and execs the real <tool>. Nothing is exported to the shell, so no
+# listing of its environment — an agent's `env | grep`, say — can show the
+# value. .envrcs/README.md, under "Per-call secrets", has what it does not
+# protect against, the ordering rule, the --set option, and the cost.
+#
+# The bundle path is baked in absolute, so the wrapper works from a cwd
+# direnv never loaded, and a worktree's wrapper reads the worktree's bundle.
+# One directory per tool, PATH_added only when wired this reload, so a tool
+# no longer wrapped is no longer on PATH.
+
+# Names become assignments in the generated file, so anything that is not an
+# identifier is refused here rather than becoming shell syntax there.
+_sops_is_ident() { case $1 in ''|[0-9]*|*[!A-Za-z0-9_]*) return 1 ;; esac; }
+
+sops_wrap() {
+    local _sops_tool _sops_path _sops_dir _sops_pair _sops_env _sops_key _sops_map=
+    local _sops_names _sops_missing= _sops_set=
+    while [ "${1:-}" = --set ]; do
+        _sops_pair=${2:-}
+        case $_sops_pair in *=*) ;; *) _sops_pair= ;; esac
+        if ! _sops_is_ident "${_sops_pair%%=*}"; then
+            log_error "sops_wrap: --set takes NAME=VALUE (got '${2:-}')"
+            return 1
+        fi
+        printf -v _sops_pair '%q' "$_sops_pair"
+        _sops_set+="${_sops_set:+ }$_sops_pair"
+        shift 2
+    done
+    _sops_tool=${1:-}
+    case $_sops_tool in
+    ''|.*|*[!A-Za-z0-9._-]*)
+        log_error "sops_wrap: tool must be a bare command name (got '$_sops_tool')"
+        return 1 ;;
+    esac
+    # Named, never defaulted: _sops_bundle_path's default is the shared
+    # bundle use_sops exports, the one per-call keys must stay out of.
+    if [ -z "${2:-}" ]; then
+        log_error "sops_wrap $_sops_tool: no bundle given"
+        return 1
+    fi
+    _sops_path=$2
+    # use_sops can take a name relative to .envrcs/, because direnv
+    # evaluates fragments with PWD there; the wrapper runs from anywhere.
+    case $_sops_path in /*) ;; *) _sops_path=$PWD/$_sops_path ;; esac
+    shift 2 2>/dev/null || shift $#
+    [ $# -gt 0 ] || { log_error "sops_wrap $_sops_tool: no ENV=KEY pairs given"; return 1; }
+    for _sops_pair in "$@"; do
+        # KEY alone means KEY=KEY: the tool reads the name the bundle uses.
+        _sops_env=${_sops_pair%%=*}
+        _sops_key=${_sops_pair#*=}
+        if ! _sops_is_ident "$_sops_env" || ! _sops_is_ident "$_sops_key"; then
+            log_error "sops_wrap $_sops_tool: '$_sops_pair' is not ENV=KEY with both identifiers"
+            return 1
+        fi
+        _sops_map+="${_sops_map:+ }$_sops_env=$_sops_key"
+    done
+
+    # Watched as use_sops_if_exists does, so a bundle rebuilt or created
+    # later re-runs this and the check below.
+    watch_file "$_sops_path"
+    if [ ! -f "$_sops_path" ]; then
+        log_error "sops_wrap $_sops_tool: no bundle at $_sops_path; not wrapping"
+        return 1
+    fi
+    if [ ! -r "$_sops_path" ]; then
+        log_error "sops_wrap $_sops_tool: cannot read $_sops_path; not wrapping"
+        return 1
+    fi
+
+    # Key names are plaintext in a sops dotenv bundle — only values are
+    # encrypted — so checking them costs no decrypt and can never wait on a
+    # pinentry. Metadata lines are sops_-prefixed. Whether the bundle
+    # decrypts is left to the call, which says why when it does not.
+    # Read and filter as separate steps, so a failed read is reported as
+    # one rather than as every key missing.
+    _sops_names=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$_sops_path") || {
+        log_error "sops_wrap $_sops_tool: cannot read $_sops_path; not wrapping"
+        return 1
+    }
+    _sops_names=$(printf '%s\n' "$_sops_names" | grep -v '^sops_') || true
+    for _sops_pair in $_sops_map; do
+        _sops_key=${_sops_pair#*=}
+        case $'\n'$_sops_names$'\n' in
+        *$'\n'"$_sops_key"$'\n'*) ;;
+        *) _sops_missing="${_sops_missing:+$_sops_missing, }$_sops_key" ;;
+        esac
+    done
+    if [ -n "$_sops_missing" ]; then
+        log_error "sops_wrap $_sops_tool: $_sops_path has no key $_sops_missing; not wrapping"
+        return 1
+    fi
+
+    # Through .tmp and mv, as the bundle recipe is: a shell resolving PATH
+    # mid-write sees the old file or the new one, never half of one. Nothing
+    # here is secret, but the link is an executable first on PATH, so the
+    # directories are owner-only. That holds only as far as the checkout
+    # does: whoever can write the layout dir or the checkout above it can
+    # replace sops-bin, as they could .envrc itself.
+    _sops_dir=$(direnv_layout_dir)/sops-bin/$_sops_tool
+    (
+        umask 077
+        # The single-file layout before per-tool directories put a wrapper
+        # file at this path.
+        [ -d "$_sops_dir" ] || rm -f "$_sops_dir"
+        mkdir -p "$_sops_dir" && chmod 700 "${_sops_dir%/*}" "$_sops_dir" || exit 1
+        printf 'envrcs=%q\nbundle=%q\nmap=%q\nfixed=(%s)\n' \
+            "$_sops_envrcs" "$_sops_path" "$_sops_map" "$_sops_set" > "$_sops_dir/.sops-wrap.tmp" &&
+            mv -f "$_sops_dir/.sops-wrap.tmp" "$_sops_dir/.sops-wrap" || exit 1
+        [ "$(readlink "$_sops_dir/$_sops_tool" 2>/dev/null)" = "$_sops_envrcs/sops-exec" ] && exit 0
+        rm -f "$_sops_dir/$_sops_tool.tmp" &&
+            ln -s "$_sops_envrcs/sops-exec" "$_sops_dir/$_sops_tool.tmp" &&
+            mv -f "$_sops_dir/$_sops_tool.tmp" "$_sops_dir/$_sops_tool"
+    ) || { log_error "sops_wrap $_sops_tool: could not write $_sops_dir"; return 1; }
+
+    PATH_add "$_sops_dir"
+    _sops_wrapped+="${_sops_wrapped:+ }$_sops_tool"
+}
+
+# Called once by the root .envrc after every fragment: a wrapper is only a
+# wrapper while it comes first on PATH, and a fragment sourced after
+# sops_wrap that PATH_adds the real tool would silently put it ahead.
+# Reported, never repaired: which PATH entry should win is the user's call.
+# .envrcs/README.md, "Per-call secrets", under "Order". Always returns 0, so
+# strict_env never drops the rest of the load over it.
+_sops_check_path_order() {
+    local _sops_tool _sops_found _sops_dir
+    for _sops_tool in ${_sops_wrapped:-}; do
+        _sops_dir=$(direnv_layout_dir)/sops-bin/$_sops_tool
+        _sops_found=$(type -P "$_sops_tool") || _sops_found='nothing'
+        # By directory, not by string, nor by -ef on the file: every link
+        # resolves to a sops-exec, so -ef would accept another tool's link.
+        [ "${_sops_found%/*}" -ef "$_sops_dir" ] && continue
+        log_error "sops_wrap $_sops_tool: \`$_sops_tool\` resolves to $_sops_found, not its wrapper in $_sops_dir, so calls run without their secrets; call sops_wrap (for kata, source_env .envrc.kata) after whatever brings $_sops_tool onto PATH"
+    done
+    return 0
 }

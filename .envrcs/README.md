@@ -6,7 +6,9 @@ direnv configuration split into composable fragments, sourced from the root `.en
 
 | File | Purpose |
 |---|---|
-| `.envrc.sops` | Defines `use_sops` and `use_sops_if_exists` for decrypting secrets |
+| `.envrc.sops` | Defines `use_sops` and `use_sops_if_exists` for decrypting secrets into the environment, and `sops_wrap` for handing them to one command per call |
+| `sops-exec` | The wrapper `sops_wrap` links each wrapped tool to; also holds the no-tty gpg rule every sops call here uses |
+| `sops-gpg-no-pinentry` | The gpg a sops call runs with no tty: yours, with `--pinentry-mode error` |
 | `.envrc.nix-config` | Bootstraps nix-direnv; where to `watch_file` imported nix modules |
 | `.envrc.secrets.template` | Decrypts `.env.secrets.demo.sops-encrypted`; shows how to add further bundles |
 | `.envrc.user.template` | Default user env: loads `.env.local`; both toolchain fragments commented, pick one; kenn layer commented, optional |
@@ -14,7 +16,7 @@ direnv configuration split into composable fragments, sourced from the root `.en
 | `.envrc.user.uv` | User env variant: uv sync + venv activation; guards on `pyproject.toml` existing, not on whether you use uv |
 | `.envrc.user.kenn` | Additive user layer: kenn-io toolkit (kata, kwt, roborev, ...) on PATH from the devcontainer flake |
 | `kenn.rev` | The one devcontainer revision `.envrc.user.kenn` builds from |
-| `.envrc.kata` | Opt-in: kata calls go to a team server, from `KATA_TEAM_SERVER` and `KATA_TEAM_TOKEN` |
+| `.envrc.kata` | Opt-in: kata calls go to a team server, from `KATA_TEAM_SERVER` and a `KATA_TEAM_TOKEN` key kata gets per call |
 | `.env.local.template` | Third layer: per-user, non-secret dotenv values |
 | `.env.secrets.demo.sops-encrypted` | Encrypted demo bundle the secrets layer decrypts |
 | `demo-age-key.txt` | Throwaway private key for the demo bundle — committed on purpose, see below |
@@ -45,9 +47,11 @@ has a `.gitignore`, which is the normal case for a repo adopting this layout.
 /result
 /result-*
 
-# tracked exceptions, and they must come last
+# tracked exceptions, and they must come last (one re-ignore after them)
 !.envrcs/.env.*.template
 !*.sops-encrypted
+# ...except your own kata identity token bundle
+.envrcs/.env.secrets.kata.sops-encrypted
 ```
 
 This is the whole of `.gitignore.template` minus its self-ignore line; if the
@@ -138,7 +142,8 @@ you want off. Editing through a symlink shows up as a dirty tracked file in
 ## The three layers
 
 1. **`.envrc.secrets`** — sops-encrypted material. Shell fragment; sources
-   `.envrc.sops` and calls `use_sops_if_exists` per bundle.
+   `.envrc.sops`, calls `use_sops_if_exists` per bundle that must be ambient,
+   and names the bundles per-call wrappers read.
 2. **`.envrc.user`** — per-user shell logic: which toolchain to bring up
    (`uv` or `flake`), anything needing conditionals or command substitution.
    The template ships with both toolchain lines commented out — which one a
@@ -419,6 +424,88 @@ plaintext by some other channel.
 Do not add `set -x` while debugging this fragment: bash traces `eval` *after*
 expansion, so the decrypted assignments land in stderr on every reload.
 
+### Per-call secrets: `sops_wrap`
+
+`use_sops` exports a bundle into the environment, and the environment is
+copied into every process the shell starts — an agent's Bash tool included,
+where an `env | grep` has put tokens into transcripts more than once. For a
+secret only one command needs, `sops_wrap` keeps it out of the environment:
+
+```sh
+sops_wrap [--set NAME=VALUE ...] <tool> <bundle> ENV=KEY [KEY ...]
+```
+
+links `$(direnv_layout_dir)/sops-bin/<tool>/<tool>` to the tracked
+`sops-exec`, writes the bundle path, the `ENV=KEY` map and the `--set`
+values to `.sops-wrap` beside the link, and `PATH_add`s that directory.
+Each call decrypts each listed `KEY` with
+`sops --decrypt --extract`, so no other key of the bundle leaves sops, sets it
+as `ENV` (`KEY` alone means `KEY=KEY`), and `exec`s the real `<tool>`. The
+shell never holds the value, so no listing of its environment can show it.
+Each `--set` is a plain value baked into the wrapper and set on every call,
+for a setting the secret must never go out without — `.envrc.kata`, the one
+caller here, bakes in the server its token belongs to. A listed key missing
+from the bundle fails `sops_wrap` and wires nothing. That check reads key
+names, which a sops dotenv bundle keeps in plaintext, so a reload decrypts
+nothing for `sops_wrap`; a bundle that does not decrypt fails per call.
+
+**What it does not do.** Anyone with your uid and your unlocked gpg-agent can
+still run `sops --decrypt` on the bundle, or read `/proc/<pid>/environ` while
+the tool runs, and the tool's own children inherit the value. The wrapper
+narrows accidents, not adversaries. It exports the values with the shell
+builtin rather than `env NAME=value tool`: argv, unlike the environment, is
+readable by every user on the host through `/proc/<pid>/cmdline` and `ps`.
+
+**Where the wrapper lives.** The code is `.envrcs/sops-exec`, tracked; only
+the link and its `.sops-wrap` data are per-checkout, in the layout dir,
+because they hold neither a secret nor a GC root: each reload rewrites the
+data, `rm -rf .direnv` plus a reload rebuilds both, and a worktree builds its
+own on `direnv allow` with no `.worktree-symlinks` entry for them; an
+untracked bundle still needs one. Each tool gets its own directory, and only
+the directories wired this reload are on PATH, so a tool you stop wrapping
+drops off PATH on the next reload. The bundle is always named — never the
+`use_sops` default — and stored absolute, so the wrapper works from a
+directory direnv never loaded. The directories and data are owner-only:
+nothing secret, but an executable first on PATH. That is no stronger than
+the checkout's own permissions: whoever can write `.direnv` or the checkout
+can replace `sops-bin`, as they could `.envrc`.
+
+**Order.** `PATH_add` prepends, so call `sops_wrap` after whatever brings the
+tool onto PATH — `.envrc.kata` after `.envrc.user.kenn`. The wrapper finds
+the real tool by walking PATH past this checkout's wrapper (by inode) and
+any other checkout's (by the marker line `sops-exec` carries), so order
+decides which one the shell sees, not which one the wrapper runs. The end
+of every reload checks it: for each tool wrapped that reload, the root
+`.envrc` logs an error if the tool no longer resolves to its wrapper —
+something sourced later put the real one ahead — and names the fix. It
+reports and leaves PATH as it is.
+
+**Cold gpg cache without a terminal.** gpg hands the passphrase prompt to
+whatever `GPG_TTY` names, and an agent's Bash tool inherits the `GPG_TTY` of
+the terminal that launched it, so a cold cache would draw a prompt there and
+wait forever. When no fd is a tty, every sops call here — `use_sops` at
+reload and the wrapper per call — runs gpg through `sops-gpg-no-pinentry`,
+which adds `--pinentry-mode error` to your own `SOPS_GPG_EXEC` (default
+`gpg`), so a cold cache fails in milliseconds. One function, `_sops_pick_gpg`
+in `sops-exec`, makes that choice for all of them, from outside any `$(...)`,
+where stdout would always look like a pipe. The fix it names: run the tool
+once in a terminal, which warms the cache for the agent shells after it. A
+`use`d bundle under the same key warms it at every terminal reload.
+
+**Quotes.** sops stores dotenv values verbatim, quotes included, where
+`direnv dotenv` strips and expands them. The wrapper strips one matching pair
+of `'` or `"` and does nothing else, so a value single-quoted per
+[the rule above](#quote-values-containing-) reaches the tool exactly as
+`use_sops` delivers it — and an unquoted `$` is not truncated.
+
+**Keep per-call keys out of ambient bundles.** A bundle that is also `use`d
+exports every key it holds, and the wrapper changes nothing about that. Put
+ambient and per-call keys in separate bundles.
+
+**Cost.** One sops call per distinct key per call of the tool: 160 ms with a
+warm agent for a PGP bundle, measured here, about 30 ms for age; two env
+names from one key cost one decrypt.
+
 ## nix
 
 `.envrc.nix-config` pins nix-direnv and is sourced by `.envrc.user.flake`.
@@ -498,24 +585,48 @@ load re-evaluates the flake (a few seconds), offline after the first.
 
 ## kata
 
-`.envrc.kata` points kata at a team server: it exports `KATA_SERVER` and
-`KATA_AUTH_TOKEN` from `KATA_TEAM_SERVER` and `KATA_TEAM_TOKEN`, sets
-`KATA_TRUST_PRIVATE_NETWORK=1` and unsets `KATA_ALLOW_INSECURE`. Opt in with
-`source_env .envrc.kata` in `.envrc.user` (a file older than this fragment
-lacks the commented line: add it), after anything that sets the two:
+`.envrc.kata` points kata at a team server: it exports `KATA_SERVER` from
+`KATA_TEAM_SERVER`, sets `KATA_TRUST_PRIVATE_NETWORK=1`, unsets
+`KATA_ALLOW_INSECURE`, and wraps kata with
+[`sops_wrap`](#per-call-secrets-sops_wrap) so the token never enters the
+environment. Opt in with `source_env .envrc.kata` in `.envrc.user` (a file
+older than this fragment lacks the commented line: add it), after
 `.env.local` for the server (the literal tailnet IP, in 100.64.0.0/10, not a
-name), a sops bundle in the secrets layer for the token. It brings no kata
-binary; the kenn layer does.
+name) and after the kenn layer, which brings the kata binary the wrapper
+runs.
 
-**Two names in, two out.** kata doesn't read `KATA_TEAM_*`, so they can sit
-anywhere, a global shell env included. `KATA_AUTH_TOKEN` must not: it
-overrides every daemon's token, so where `KATA_SERVER` is unset kata would
-send the team token to a local daemon. The fragment sets both or neither,
-and with neither it unsets any `KATA_AUTH_TOKEN` it inherited.
+The token is the `KATA_TEAM_TOKEN` key of a sops bundle:
+`.envrcs/.env.secrets.kata.sops-encrypted`, or the one `kata_team_bundle`
+names in `.envrc.secrets`. Do not also `use` that bundle — see
+[the ambient rule](#per-call-secrets-sops_wrap). It is your own identity
+token, so the bundle is yours alone and must stay untracked. A `.gitignore`
+generated from the current template ignores the default name; the root
+`.envrc` never rewrites an existing one, so a checkout older than that line
+needs it added by hand (`git check-ignore -v` on the bundle tells you), and
+so does any other name you give `kata_team_bundle`, which
+`!*.sops-encrypted` would otherwise re-include. A new worktree does not
+have the bundle until you add a
+`symlink	.envrcs/.env.secrets.kata.sops-encrypted` line to your
+`.envrcs/.worktree-manifest`, which is per-checkout and untracked.
+
+A token that an earlier version of this fragment read from an ambient bundle
+moves out of it into this one; leaving it there is what the ambient rule
+forbids, and the fragment unsets it anyway.
+
+**Two names out, both per call.** The wrapper sets `KATA_AUTH_TOKEN`, which
+a `KATA_SERVER` route reads, and `KATA_TEAM_TOKEN`, which a daemon catalog
+entry in `~/.kata/config.toml` names with `token_env`, so `kata --daemon
+team` works too. It also sets `KATA_SERVER` and
+`KATA_TRUST_PRIVATE_NETWORK` itself (`--set`), so the token never goes out
+without the server it belongs to, whatever the caller did to `KATA_SERVER`.
+Neither token name is left in the shell: the fragment unsets both
+whether or not it wired anything, because one inherited from outside would
+bypass the wrapper, and `KATA_AUTH_TOKEN` overrides every daemon's token.
 
 **An `if`, not `${VAR:?}`.** A failing `:?` makes direnv drop everything
-the `.envrc` sets, the kenn PATH included. Here a missing value logs an
-error, sets nothing, and kata picks its daemon as it would anywhere else.
+the `.envrc` sets, the kenn PATH included. Here a missing server or a
+`sops_wrap` failure logs an error, sets nothing, and kata picks its daemon as
+it would anywhere else.
 
 **No URL check.** kata 0.18.0 refuses a `KATA_SERVER` with no scheme,
 another scheme, or plain http to a name or a public IP, before connecting; a
@@ -523,9 +634,10 @@ well-formed URL to the wrong host passes kata and any pattern check alike.
 The refusal suggests `KATA_ALLOW_INSECURE=1`: fix the value instead, since
 that is the variable the fragment removes.
 
-**Checking it.** `kata federation identity --json` sends the token and
-reports the actor it authenticated; `kata health` sends none, so it passes
-even where the token would be refused.
+**Checking it.** `command -v kata` names `.direnv/sops-bin/kata/kata`, and
+`compgen -e | grep -cx 'KATA_\(AUTH\|TEAM\)_TOKEN'` is 0. `kata federation identity --json` sends the
+token and reports the actor it authenticated; `kata health` sends none, so it
+passes even where the token would be refused.
 
 ## Path conventions
 
@@ -551,7 +663,7 @@ complains. `uv` or `nix` only if you enable that toolchain fragment.
 — those two exist so *this* repo demonstrates itself. Leaving them out is
 safe: the demo line in `.envrc.secrets.template` watches a bundle that isn't
 there and no-ops. The templates are optional too: leave out
-`.envrc.secrets.template` (with `.envrc.sops` and the demo files) if you have
+`.envrc.secrets.template` (with `.envrc.sops`, `sops-exec`, `sops-gpg-no-pinentry` and the demo files) if you have
 no sops secrets, or `.gitignore.template` if you already keep a
 `.gitignore` of your own — see
 [Auto-create](#auto-create-and-how-to-disable-a-fragment).
@@ -606,6 +718,12 @@ rules tolerate: everything matching `.env`, `*.env` or `.envrcs/.env.*` is
 ignored, and only `*.sops-encrypted` is re-included, so an example input has
 to live outside those patterns or be explicitly negated.
 
+**`sops_wrap` for age bundles whose key file is not ambient.** The wrapper
+calls sops with the caller's environment, so an age bundle works when
+`SOPS_AGE_KEY_FILE` is exported (or the key sits at sops's default path), but
+the demo's one-call `SOPS_AGE_KEY_FILE=... use ...` prefix has no equivalent:
+`sops_wrap` would need to bake the key file path into the wrapper.
+
 Deliberately not done, so they are not mistaken for oversights:
 
 - The nix `watch_file` in `.envrc.nix-config` stays commented out until this
@@ -631,12 +749,13 @@ Deliberately not done, so they are not mistaken for oversights:
 ├── export direnv_root
 ├── auto-create .gitignore, .envrcs/.envrc.{secrets,user} if missing
 ├── source_env_if_exists .envrcs/.envrc.secrets
-│   └── .envrc.sops → use_sops on encrypted .env files
+│   └── .envrc.sops → use_sops on encrypted .env files; defines sops_wrap
 └── source_env_if_exists .envrcs/.envrc.user
     ├── one of: .envrc.user.{uv,flake}
     ├── optionally also: .envrc.user.kenn → kenn-io toolkit on PATH
     ├── dotenv_if_exists .env.local → per-user non-secret values, if configured
-    └── optionally: .envrc.kata → kata calls to the team server
+    └── optionally: .envrc.kata → kata calls to the team server,
+                                  token per call via sops_wrap
 ```
 
 A fresh clone only needs:
