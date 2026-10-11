@@ -631,6 +631,12 @@ Neither token name is left in the shell: the fragment unsets both
 whether or not it wired anything, because one inherited from outside would
 bypass the wrapper, and `KATA_AUTH_TOKEN` overrides every daemon's token.
 
+**`KATA_SERVER` stays exported.** A kata that bypasses the wrapper — called
+by store path, or under a PATH that drops `sops-bin` — reaches the team server
+with no token and fails authentication. Unexporting it would make that kata
+silently use the local daemon instead; a loud failure is the better of the
+two, and nothing leaks either way.
+
 **An `if`, not `${VAR:?}`.** A failing `:?` makes direnv drop everything
 the `.envrc` sets, the kenn PATH included. Here a missing server or a
 `sops_wrap` failure logs an error, sets nothing, and kata picks its daemon as
