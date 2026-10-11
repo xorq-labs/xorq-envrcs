@@ -470,6 +470,11 @@ nothing secret, but an executable first on PATH. That is no stronger than
 the checkout's own permissions: whoever can write `.direnv` or the checkout
 can replace `sops-bin`, as they could `.envrc`.
 
+**What it cannot wrap.** The commands the wrapper itself runs through PATH —
+`bash`, `env`, `dirname`, `sed`, `sops`, `gpg`, `gpg2` — are refused: wrapped,
+each would resolve back to the wrapper. Any identifier works as an `ENV` or
+`--set` name; none can change which binary the wrapper runs.
+
 **Order.** `PATH_add` prepends, so call `sops_wrap` after whatever brings the
 tool onto PATH — `.envrc.kata` after `.envrc.user.kenn`. The wrapper finds
 the real tool by walking PATH past this checkout's wrapper (by inode) and
@@ -496,7 +501,10 @@ once in a terminal, which warms the cache for the agent shells after it. A
 `direnv dotenv` strips and expands them. The wrapper strips one matching pair
 of `'` or `"` and does nothing else, so a value single-quoted per
 [the rule above](#quote-values-containing-) reaches the tool exactly as
-`use_sops` delivers it — and an unquoted `$` is not truncated.
+`use_sops` delivers it — and an unquoted `$` is not truncated. A
+double-quoted value holding `\` or `$` is refused per call, naming the key:
+`direnv dotenv` would expand those and the wrapper does not, so the two paths
+would hand the tool different values.
 
 **Keep per-call keys out of ambient bundles.** A bundle that is also `use`d
 exports every key it holds, and the wrapper changes nothing about that. Put

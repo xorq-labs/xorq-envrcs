@@ -234,6 +234,11 @@ sops_wrap() {
     ''|.*|*[!A-Za-z0-9._-]*)
         log_error "sops_wrap: tool must be a bare command name (got '$_sops_tool')"
         return 1 ;;
+    # What sops-exec and sops-gpg-no-pinentry themselves run through PATH:
+    # wrapped, each would resolve to the wrapper and recurse without end.
+    bash|env|dirname|sed|sops|gpg|gpg2)
+        log_error "sops_wrap: cannot wrap $_sops_tool, which the wrapper itself runs"
+        return 1 ;;
     esac
     # Named, never defaulted: _sops_bundle_path's default is the shared
     # bundle use_sops exports, the one per-call keys must stay out of.
@@ -241,11 +246,10 @@ sops_wrap() {
         log_error "sops_wrap $_sops_tool: no bundle given"
         return 1
     fi
-    _sops_path=$2
     # use_sops can take a name relative to .envrcs/, because direnv
     # evaluates fragments with PWD there; the wrapper runs from anywhere.
-    case $_sops_path in /*) ;; *) _sops_path=$PWD/$_sops_path ;; esac
-    shift 2 2>/dev/null || shift $#
+    _sops_path=$(expand_path "$2")
+    shift 2
     [ $# -gt 0 ] || { log_error "sops_wrap $_sops_tool: no ENV=KEY pairs given"; return 1; }
     for _sops_pair in "$@"; do
         # KEY alone means KEY=KEY: the tool reads the name the bundle uses.
@@ -263,10 +267,6 @@ sops_wrap() {
     watch_file "$_sops_path"
     if [ ! -f "$_sops_path" ]; then
         log_error "sops_wrap $_sops_tool: no bundle at $_sops_path; not wrapping"
-        return 1
-    fi
-    if [ ! -r "$_sops_path" ]; then
-        log_error "sops_wrap $_sops_tool: cannot read $_sops_path; not wrapping"
         return 1
     fi
 
@@ -302,17 +302,16 @@ sops_wrap() {
     _sops_dir=$(direnv_layout_dir)/sops-bin/$_sops_tool
     (
         umask 077
-        # The single-file layout before per-tool directories put a wrapper
-        # file at this path.
-        [ -d "$_sops_dir" ] || rm -f "$_sops_dir"
         mkdir -p "$_sops_dir" && chmod 700 "${_sops_dir%/*}" "$_sops_dir" || exit 1
+        # Temp names carry this subshell's pid: two reloads at once (two
+        # panes, one watched file) must not trip over one fixed name.
+        _sops_tmp=${BASHPID:-$$}
         printf 'envrcs=%q\nbundle=%q\nmap=%q\nfixed=(%s)\n' \
-            "$_sops_envrcs" "$_sops_path" "$_sops_map" "$_sops_set" > "$_sops_dir/.sops-wrap.tmp" &&
-            mv -f "$_sops_dir/.sops-wrap.tmp" "$_sops_dir/.sops-wrap" || exit 1
+            "$_sops_envrcs" "$_sops_path" "$_sops_map" "$_sops_set" > "$_sops_dir/.sops-wrap.tmp.$_sops_tmp" &&
+            mv -f "$_sops_dir/.sops-wrap.tmp.$_sops_tmp" "$_sops_dir/.sops-wrap" || exit 1
         [ "$(readlink "$_sops_dir/$_sops_tool" 2>/dev/null)" = "$_sops_envrcs/sops-exec" ] && exit 0
-        rm -f "$_sops_dir/$_sops_tool.tmp" &&
-            ln -s "$_sops_envrcs/sops-exec" "$_sops_dir/$_sops_tool.tmp" &&
-            mv -f "$_sops_dir/$_sops_tool.tmp" "$_sops_dir/$_sops_tool"
+        ln -s "$_sops_envrcs/sops-exec" "$_sops_dir/$_sops_tool.tmp.$_sops_tmp" &&
+            mv -f "$_sops_dir/$_sops_tool.tmp.$_sops_tmp" "$_sops_dir/$_sops_tool"
     ) || { log_error "sops_wrap $_sops_tool: could not write $_sops_dir"; return 1; }
 
     PATH_add "$_sops_dir"

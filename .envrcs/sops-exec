@@ -89,10 +89,19 @@ for pair in $map; do
             echo "$tool: could not decrypt $key from $bundle; if the gpg cache is cold, run \`$tool\` once in a terminal" >&2
             exit 1
         fi
-        # One matching pair of quotes off: README, "Quotes".
+        # One matching pair of quotes off: README, "Quotes". Inside double
+        # quotes direnv dotenv also expands `$` and `\`, which this does
+        # not, so such a value is refused rather than delivered differently
+        # from use_sops. The message names the key, never the value.
         case $value in
         "'"*"'") value=${value#\'}; value=${value%\'} ;;
-        '"'*'"') value=${value#\"}; value=${value%\"} ;;
+        '"'*'"')
+            value=${value#\"}; value=${value%\"}
+            case $value in
+            *[\\\$]*)
+                echo "$tool: $key in $bundle is double-quoted with \\ or \$ in it; single-quote it (.envrcs/README.md, \"Quotes\")" >&2
+                exit 1 ;;
+            esac ;;
         esac
         if [ -z "$value" ]; then
             echo "$tool: $key in $bundle is empty" >&2
@@ -102,6 +111,10 @@ for pair in $map; do
     fi
     envs+=("$env_name=$value")
 done
+# The real tool moves into the positional parameters first: an exported
+# name can be any identifier, `real` and PATH included, and must not change
+# what is exec'd. $real always holds a slash, so PATH no longer matters.
+set -- "$real" "$@"
 # shellcheck disable=SC2163 # exporting the NAME=value string is the point
 for assign in ${fixed[@]+"${fixed[@]}"} "${envs[@]}"; do export "$assign"; done
-exec "$real" "$@"
+exec "$@"
