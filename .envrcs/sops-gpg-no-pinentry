@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# The SOPS_GPG_EXEC for a sops call with no tty on any fd: the user's own gpg
+# (SOPS_WRAP_GPG), failing fast on a cold cache instead of drawing a pinentry
+# nobody can answer. Chosen by _sops_pick_gpg in sops-exec. Refuses to be
+# its own gpg, which would exec itself until the argument list overflowed.
+gpg=${SOPS_WRAP_GPG:-gpg}
+if [ "$(command -v -- "$gpg")" -ef "$0" ]; then
+    echo "${0##*/}: SOPS_WRAP_GPG names this script, not a gpg" >&2
+    exit 2
+fi
+exec "$gpg" --pinentry-mode error "$@"
