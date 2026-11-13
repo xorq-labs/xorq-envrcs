@@ -38,8 +38,8 @@ helpers, path conventions, and the concatenated-bundle design.
 
 ## merging
 
-PRs are squash-merged, the only method the repo allows. The squash commit is
-titled with the PR title, or with the commit's own subject when the branch
-has one commit, and its message lists the branch's commit messages. No CI
-runs yet (kata xorq-envrcs#m9v3) and there is no pre-merge check script: run
-`bash tests/test-fragments.sh` on the head before merging.
+PRs are squash-merged, the only method the repo allows. The squash title
+defaults to the PR title, or to the commit's subject on a one-commit branch,
+and the message to the branch's commit messages. No CI runs: before merging,
+run `bash tests/test-fragments.sh` on the head with main merged in. A pass
+says nothing about `.envrc` or the other fragments.
