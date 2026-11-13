@@ -98,13 +98,21 @@ repo.
 it exists. A rebuild rather than a one-time copy, so a template change
 reaches every checkout on its next reload; a one-time copy never updates a
 `.gitignore` that already exists. Edit the template or `.gitignore.local`,
-never `.gitignore`: the next load overwrites it.
+never `.gitignore`: the next load replaces it.
 
 - **No template, no rebuild.** A repo that keeps a `.gitignore` of its own
   does not track `.gitignore.template`, and the fragment does nothing.
 - **A tracked `.gitignore` is never overwritten.** With both a tracked
   `.gitignore` and a template, the fragment logs an error and leaves it
   alone: rebuilding would dirty the tracked file on every load.
+- **A rule the rebuild would drop is kept, in `.gitignore.orig`.** If the
+  old `.gitignore` holds a rule (a line that is not a comment or blank) the
+  new one lacks — one added by hand, one the template has since removed, or
+  the unanchored self-ignore of a checkout from before the rebuild — the
+  load moves the old file to `.gitignore.orig` (ignored) and says so. Move
+  the rules you want into `.gitignore.local`, then delete it. While
+  `.gitignore.orig` exists, a `.gitignore` with such a rule is not rebuilt,
+  and the load logs an error instead.
 - **An unreadable template keeps the old `.gitignore`.** The rebuild goes
   through a temp file that replaces `.gitignore` only after every read
   succeeded.
@@ -121,11 +129,11 @@ templates if they are missing, so `direnv allow` is the only step on a fresh
 clone. Existing files are never overwritten, and a symlink to a template
 counts as existing. Two conditions, each logged when it stops a file:
 
-- **Main checkout only.** In a linked worktree (`.git` is a file there), copy
-  the two files from the main checkout instead; devcontainer's
-  `setup-worktree` does, but only where they are absent, so creating them
-  first would leave the worktree on the templates. With no `.git` at all,
-  nothing is created either: the next condition cannot be checked.
+- **Not in a linked worktree.** There, copy the two files from the main
+  checkout instead; devcontainer's `setup-worktree` does, but only where
+  they are absent, so creating them first would leave the worktree on the
+  templates. A subdirectory of a checkout and a submodule are not linked
+  worktrees; outside any git repository, the next condition fails.
 - **Only where git ignores the file**, so a fragment that will later be
   edited to hold a secret is never created stageable: under a `.gitignore`
   that lacks the rules, after a failed rebuild, or under a
@@ -591,14 +599,15 @@ there and no-ops. The templates are optional too: leave out
 `.envrc.secrets.template` (with `.envrc.sops` and the demo files) if you have
 no sops secrets, or `.gitignore.template` if you already keep a
 `.gitignore` of your own — see
-[Auto-create](#auto-create-and-how-to-disable-a-fragment).
+[The generated .gitignore](#the-generated-gitignore).
 
 **If you keep your own `.gitignore`, fix it before the first `direnv
 allow`.** Until it ignores `.envrcs/.envrc.secrets` and `.envrcs/.envrc.user`,
 the auto-create refuses both, logging an error for each, and neither layer
 loads. If instead you track `.gitignore.template`, untrack your `.gitignore`
 (`git rm --cached .gitignore`) and move its rules into the template;
-`.envrc.gitignore` refuses to rebuild a tracked one. Three things to do for
+`.envrc.gitignore` refuses to rebuild a tracked one, and a load in between
+keeps the rules not yet moved in `.gitignore.orig`. Three things to do for
 your own `.gitignore`, in this order:
 
 1. Add the block from [Untracked](#untracked-local--secret) **at the end of

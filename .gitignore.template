@@ -5,6 +5,7 @@
 # Anchored: unanchored, `.gitignore` would also ignore every nested one.
 /.gitignore
 /.gitignore.local
+/.gitignore.orig
 /.gitignore.tmp.*
 
 # Build products of the user layer: .direnv is direnv's own cache, .venv is

@@ -13,15 +13,20 @@
 # PWD is .envrcs/ here, hence $direnv_root on every path; `return`, never
 # `exit`, which would end direnv's whole load.
 
-# Main checkout only. In a linked worktree (.git is a file there), the two
-# files are copied from the main checkout, and devcontainer's setup-worktree
-# copies only where they are absent: creating them here first would leave
-# the worktree on the templates. With no .git at all, the git check below
-# cannot run.
-if [ ! -d "$direnv_root/.git" ]; then
-    log_status "not a main git checkout: not creating .envrcs/.envrc.{secrets,user}; copy them from the main checkout"
+# Not in a linked worktree, whose git dir differs from the common one (a
+# subdirectory of a checkout and a submodule share theirs): its two files are
+# copied from the main checkout, and devcontainer's setup-worktree copies
+# only where they are absent, so creating them here first would leave the
+# worktree on the templates. Outside any repo, rev-parse fails and the git
+# check below refuses each file.
+if _from_template_dirs=$(git -C "$direnv_root" rev-parse --path-format=absolute \
+    --git-dir --git-common-dir 2>/dev/null) &&
+    [ "${_from_template_dirs%%$'\n'*}" != "${_from_template_dirs#*$'\n'}" ]; then
+    unset _from_template_dirs
+    log_status "linked git worktree: not creating .envrcs/.envrc.{secrets,user}; copy them from the main checkout"
     return 0
 fi
+unset _from_template_dirs
 
 # Only where git already ignores the file, so one is never created
 # stageable — under a .gitignore that lacks the rules, a failed rebuild, or a

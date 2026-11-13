@@ -6,9 +6,10 @@
 # as direnv's does, so a path missing its $direnv_root prefix fails here as
 # it would under direnv. It runs the fragment in direnv's default mode, not
 # strict_env, so a failing command inside it reaches the case's checks
-# rather than ending the run; one case loads under strict_env as well.
-# watch_file, log_status and log_error are stubs; direnv itself is not
-# needed. Needs bash, git and install.
+# rather than ending the run; the strict_env cases at the end load under
+# strict_env as well. watch_file, log_status and log_error are stubs (the
+# first records its arguments in $direnv_root.watch); direnv itself is not
+# needed. Needs bash, git, awk and install.
 #
 # Usage: tests/test-fragments.sh   (tests the working tree it sits in)
 set -euo pipefail
@@ -17,9 +18,16 @@ repo=$(cd "$(dirname "$0")/.." && pwd -P)
 work=$(cd "$(mktemp -d)" && pwd -P)
 trap 'chmod -R u+rw "$work" 2>/dev/null; rm -rf "$work"' EXIT
 failures=0
-# No host git config: a global excludesFile would make check-ignore pass
-# for a file the repo's own rules do not ignore.
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# No host git config and no host excludes file: either would make
+# check-ignore pass for a file the repo's own rules do not ignore. With no
+# config, git still reads $XDG_CONFIG_HOME/git/ignore, so that points here.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 XDG_CONFIG_HOME=$work/xdg
+
+fragments_into() { # <dir>: the fragments and templates under test
+    mkdir -p "$1/.envrcs"
+    cp "$repo/.gitignore.template" "$1/"
+    cp "$repo"/.envrcs/.envrc.{gitignore,from-template,secrets.template,user.template} "$1/.envrcs/"
+}
 
 # A main checkout at $1 holding the fragments and templates under test.
 # git init, not a clone: the cases need .git as a directory, a file, or
@@ -28,9 +36,7 @@ scratch_repo() {
     git init -q "$1"
     git -C "$1" -c user.name=test -c user.email=test@example.invalid \
         commit -q --allow-empty -m init
-    mkdir -p "$1/.envrcs"
-    cp "$repo/.gitignore.template" "$1/"
-    cp "$repo"/.envrcs/.envrc.{gitignore,from-template,secrets.template,user.template} "$1/.envrcs/"
+    fragments_into "$1"
 }
 
 # Load fragment $2 with direnv_root=$1, in mode $3 (default: direnv's
@@ -48,7 +54,7 @@ loader='
     *) set +eu +o pipefail ;;
     esac
     export direnv_root=$1
-    watch_file() { :; }
+    watch_file() { printf "%s\n" "$@" >>"$direnv_root.watch"; }
     log_status() { echo "log_status: $*" >&2; }
     log_error() { echo "log_error: $*" >&2; }
     source_env() {
@@ -58,7 +64,7 @@ loader='
     }
     cd "$direnv_root"
     source_env ".envrcs/$2"
-    for v in _gitignore_tmp _from_template_f _from_template_rc; do
+    for v in _gitignore_tmp _from_template_f _from_template_rc _from_template_dirs; do
         [ -z "${!v+set}" ] || echo "$v"
     done
 '
@@ -75,6 +81,8 @@ check() { # <name> <command>...
     fi
 }
 
+no_tmp() { test -z "$(find "$1" -maxdepth 1 -name '.gitignore.tmp.*')"; }
+ignored() { git -C "$1" check-ignore -q "$2"; }
 mode_600() { [ "$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1")" = 600 ]; }
 no_errors() { ! grep -q '^log_error' "$1"; }
 
@@ -87,6 +95,13 @@ check "gitignore: no .gitignore.local gives the template" cmp -s "$r/.gitignore"
 check "gitignore: leaves no variable set" test -z "$leaked"
 check "gitignore: the result ignores itself" git -C "$r" check-ignore -q .gitignore
 check "gitignore: ... but not a nested .gitignore" eval "! git -C '$r' check-ignore -q sub/.gitignore"
+for f in .gitignore.local .gitignore.orig .gitignore.tmp.1; do
+    check "gitignore: the result ignores $f at the root" ignored "$r" "$f"
+    check "gitignore: ... but not sub/$f" eval "! git -C '$r' check-ignore -q sub/$f"
+done
+check "gitignore: a rebuild leaves no temp file" no_tmp "$r"
+check "gitignore: watches the template and .gitignore.local" test "$(cat "$r.watch")" = \
+    "$(printf '%s\n' "$r/.gitignore.template" "$r/.gitignore.local")"
 
 r=$work/g2
 scratch_repo "$r"
@@ -103,6 +118,35 @@ echo '/added-later' >>"$r/.gitignore.template"
 load "$r" .envrc.gitignore >/dev/null
 check "gitignore: a template edit reaches an existing .gitignore on reload" \
     cmp -s "$r/.gitignore" "$r/.gitignore.template"
+check "gitignore: ... and keeps no .gitignore.orig, since it drops no rule" test ! -e "$r/.gitignore.orig"
+
+# An untracked .gitignore with a rule the rebuild lacks: moved aside, not lost.
+r=$work/k1
+scratch_repo "$r"
+printf '%s\n' '# by hand' '/.gitignore' 'scratch/' >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: a dropped rule's .gitignore is rebuilt" cmp -s "$r/.gitignore" "$r/.gitignore.template"
+check "gitignore: ... and the old one kept as .gitignore.orig" grep -qx 'scratch/' "$r/.gitignore.orig"
+check "gitignore: ... and that is reported as status" grep -q '^log_status: .*\.gitignore\.orig' "$r.err"
+check "gitignore: ... not as an error" no_errors "$r.err"
+
+# Only comments and blank lines differ: nothing is dropped, nothing kept.
+r=$work/k2
+scratch_repo "$r"
+printf '%s\n' '# an older header' '' '/.gitignore' >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: a comment-only difference keeps no .gitignore.orig" test ! -e "$r/.gitignore.orig"
+
+# A .gitignore.orig already there: never overwritten; nothing is rebuilt.
+r=$work/k3
+scratch_repo "$r"
+echo 'first/' >"$r/.gitignore.orig"
+echo 'second/' >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: an existing .gitignore.orig is not overwritten" test "$(cat "$r/.gitignore.orig")" = first/
+check "gitignore: ... and the .gitignore with the dropped rule is kept" test "$(cat "$r/.gitignore")" = second/
+check "gitignore: ... and that is reported" grep -q '^log_error: .*\.gitignore\.orig exists' "$r.err"
+check "gitignore: ... and leaves no temp file" no_tmp "$r"
 
 r=$work/g3
 scratch_repo "$r"
@@ -122,8 +166,7 @@ else
     load "$r" .envrc.gitignore >/dev/null
     check "gitignore: unreadable template keeps the old .gitignore" test "$(cat "$r/.gitignore")" = /old
     check "gitignore: unreadable template is reported" grep -q 'not rebuilt' "$r.err"
-    check "gitignore: unreadable template leaves no temp file" \
-        test -z "$(find "$r" -maxdepth 1 -name '.gitignore.tmp.*')"
+    check "gitignore: unreadable template leaves no temp file" no_tmp "$r"
 fi
 
 r=$work/g5
@@ -157,10 +200,31 @@ mkdir -p "$work/t2-wt/.envrcs"
 cp "$r"/.gitignore.template "$work/t2-wt/"
 cp "$r"/.envrcs/.envrc.* "$work/t2-wt/.envrcs/"
 load "$work/t2-wt" .envrc.gitignore >/dev/null
-load "$work/t2-wt" .envrc.from-template >/dev/null
+leaked=$(load "$work/t2-wt" .envrc.from-template)
 check "from-template: linked worktree creates neither file" \
     test ! -e "$work/t2-wt/.envrcs/.envrc.secrets" -a ! -e "$work/t2-wt/.envrcs/.envrc.user"
-check "from-template: ... and says so" grep -q 'not a main git checkout' "$work/t2-wt.err"
+check "from-template: ... and says so" grep -q 'linked git worktree' "$work/t2-wt.err"
+check "from-template: ... as status, not as an error" no_errors "$work/t2-wt.err"
+check "from-template: ... and leaves no variable set" test -z "$leaked"
+
+# Fragments in a subdirectory of a checkout, and in a submodule: each is in
+# its repo's main checkout, so both files are created.
+r=$work/m1
+git init -q "$r"
+fragments_into "$r/proj"
+load "$r/proj" .envrc.gitignore >/dev/null
+load "$r/proj" .envrc.from-template >/dev/null
+check "from-template: a subdirectory of a checkout creates both files" \
+    test -f "$r/proj/.envrcs/.envrc.secrets" -a -f "$r/proj/.envrcs/.envrc.user"
+r=$work/m2
+scratch_repo "$work/m2-sub"
+git init -q "$r"
+git -C "$r" -c protocol.file.allow=always submodule add -q "$work/m2-sub" sm 2>/dev/null
+fragments_into "$r/sm"
+load "$r/sm" .envrc.gitignore >/dev/null
+load "$r/sm" .envrc.from-template >/dev/null
+check "from-template: a submodule creates both files" \
+    test -f "$r/sm/.envrcs/.envrc.secrets" -a -f "$r/sm/.envrcs/.envrc.user"
 
 r=$work/t3
 scratch_repo "$r"
@@ -219,6 +283,11 @@ scratch_repo "$r"
 load "$r" .envrc.gitignore >/dev/null
 printf '%s\n' '!.envrcs/.envrc.secrets' >>"$r/.gitignore"
 check "strict_env: a refused file does not abort the load" load "$r" .envrc.from-template strict
+r=$work/s3
+scratch_repo "$r"
+echo 'scratch/' >"$r/.gitignore"
+check "strict_env: keeping a dropped rule's .gitignore loads" load "$r" .envrc.gitignore strict
+check "strict_env: ... and keeps it" grep -qx 'scratch/' "$r/.gitignore.orig"
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures failed"
