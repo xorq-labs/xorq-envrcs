@@ -13,6 +13,17 @@
 # PWD is .envrcs/ here, hence $direnv_root on every path; `return`, never
 # `exit`, which would end direnv's whole load.
 
+# Nothing to create (each file exists, or has no template): nothing to say.
+_from_template_todo=
+for _from_template_f in "$direnv_root"/.envrcs/.envrc.secrets "$direnv_root"/.envrcs/.envrc.user; do
+    [ -f "$_from_template_f" ] || [ ! -f "$_from_template_f.template" ] || _from_template_todo=1
+done
+if [ -z "$_from_template_todo" ]; then
+    unset _from_template_f _from_template_todo
+    return 0
+fi
+unset _from_template_f _from_template_todo
+
 # Not in a linked worktree, whose git dir differs from the common one (a
 # subdirectory of a checkout and a submodule share theirs): its two files are
 # copied from the main checkout, and devcontainer's setup-worktree copies

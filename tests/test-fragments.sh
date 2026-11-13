@@ -64,7 +64,7 @@ loader='
     }
     cd "$direnv_root"
     source_env ".envrcs/$2"
-    for v in _gitignore_tmp _gitignore_rc _from_template_f _from_template_rc _from_template_dirs; do
+    for v in _gitignore_tmp _gitignore_rc _from_template_f _from_template_rc _from_template_dirs _from_template_todo; do
         [ -z "${!v+set}" ] || echo "$v"
     done
 '
@@ -190,11 +190,54 @@ else
     check "gitignore: ... and is reported" grep -q '^log_error: could not compare' "$r.err"
 fi
 
+# A rename that fails: an mv shim refuses any move whose arguments contain
+# $fail_mv, and runs the real mv otherwise. The old .gitignore survives
+# each failure, and no temp file is left.
+real_mv=$(command -v mv)
+mkdir "$work/mv-fail"
+printf '#!/bin/sh\ncase "$*" in *"$fail_mv"*) exit 1 ;; esac\nexec %s "$@"\n' \
+    "$real_mv" >"$work/mv-fail/mv"
+chmod +x "$work/mv-fail/mv"
+r=$work/v1
+scratch_repo "$r"
+cp "$r/.gitignore.template" "$r/.gitignore"
+echo '/added' >>"$r/.gitignore.template"
+fail_mv=/.gitignore.tmp. PATH=$work/mv-fail:$PATH load "$r" .envrc.gitignore >/dev/null
+check "gitignore: a failed rename keeps the old .gitignore" \
+    eval "! grep -qx /added '$r/.gitignore'"
+check "gitignore: ... and is reported" grep -q '^log_error: .*rename failed' "$r.err"
+check "gitignore: ... and leaves no temp file" no_tmp "$r"
+r=$work/v2
+scratch_repo "$r"
+echo 'scratch/' >"$r/.gitignore"
+fail_mv=/.gitignore.tmp. PATH=$work/mv-fail:$PATH load "$r" .envrc.gitignore >/dev/null
+check "gitignore: a failed rename after moving the old one aside puts it back" \
+    test "$(cat "$r/.gitignore" 2>/dev/null)" = scratch/ -a ! -e "$r/.gitignore.orig"
+check "gitignore: ... and is reported" grep -q '^log_error: .*rename failed' "$r.err"
+check "gitignore: ... and leaves no temp file" no_tmp "$r"
+r=$work/v3
+scratch_repo "$r"
+echo 'scratch/' >"$r/.gitignore"
+fail_mv=/.gitignore.orig PATH=$work/mv-fail:$PATH load "$r" .envrc.gitignore >/dev/null
+check "gitignore: failing to move the old one aside keeps it" test "$(cat "$r/.gitignore")" = scratch/
+check "gitignore: ... and is reported" grep -q '^log_error: could not move .gitignore to' "$r.err"
+check "gitignore: ... and leaves no temp file" no_tmp "$r"
+
+# git that cannot say whether .gitignore is tracked: not rebuilt.
+r=$work/v4
+scratch_repo "$r"
+echo '/old' >"$r/.gitignore"
+echo garbage >"$r/.git/index"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: git failing on the tracked check keeps the old .gitignore" test "$(cat "$r/.gitignore")" = /old
+check "gitignore: ... and is reported" grep -q '^log_error: git could not say whether .gitignore is tracked' "$r.err"
+
 # A .gitignore that is a directory: not rebuilt into.
 r=$work/k10
 scratch_repo "$r"
 mkdir "$r/.gitignore"
-load "$r" .envrc.gitignore >/dev/null
+leaked=$(load "$r" .envrc.gitignore)
+check "gitignore: ... a refused .gitignore directory leaves no variable set" test -z "$leaked"
 check "gitignore: a .gitignore directory gets nothing inside" test -z "$(ls -A "$r/.gitignore")"
 check "gitignore: ... and is reported" grep -q 'not a regular file' "$r.err"
 
@@ -266,6 +309,11 @@ check "from-template: linked worktree creates neither file" \
     test ! -e "$work/t2-wt/.envrcs/.envrc.secrets" -a ! -e "$work/t2-wt/.envrcs/.envrc.user"
 check "from-template: ... and says so" grep -q 'linked git worktree' "$work/t2-wt.err"
 check "from-template: ... as status, not as an error" no_errors "$work/t2-wt.err"
+check "from-template: ... and leaves no variable set" test -z "$leaked"
+cp "$work/t2-wt/.envrcs/.envrc.secrets.template" "$work/t2-wt/.envrcs/.envrc.secrets"
+cp "$work/t2-wt/.envrcs/.envrc.user.template" "$work/t2-wt/.envrcs/.envrc.user"
+leaked=$(load "$work/t2-wt" .envrc.from-template)
+check "from-template: a linked worktree that has both files says nothing" test ! -s "$work/t2-wt.err"
 check "from-template: ... and leaves no variable set" test -z "$leaked"
 rm -f "$work/t2-wt/.envrcs/.envrc.secrets" "$work/t2-wt/.envrcs/.envrc.user"
 GIT_DIR=$r/.git load "$work/t2-wt" .envrc.from-template >/dev/null

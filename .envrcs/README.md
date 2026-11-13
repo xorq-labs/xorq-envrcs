@@ -163,9 +163,13 @@ when sourced.
 
 **To drop a layer for the whole repo, stop tracking its template.** The
 auto-create skips a file whose template is absent, and the root `.envrc`
-sources each fragment with `source_env_if_exists`, so a missing layer is a
+sources each layer with `source_env_if_exists`, so a missing layer is a
 silent no-op rather than an error on every reload (or an aborted load under
-`strict_env`). The root `.envrc` needs no edit, which keeps it identical
+`strict_env`). The two step fragments, `.envrc.gitignore` and
+`.envrc.from-template`, are the opposite: sourced with plain `source_env`,
+because each opts out through its templates, never by being absent. A
+missing one is a broken copy, and direnv says `referenced … does not exist`
+on every load (under `strict_env`, the load stops). The root `.envrc` needs no edit, which keeps it identical
 across every repo using this layout. Two consequences:
 
 - Checkouts that already generated the fragment keep sourcing it; removing
@@ -681,8 +685,8 @@ Deliberately not done, so they are not mistaken for oversights:
 ```
 .envrc (repo root)
 ├── export direnv_root
-├── source_env_if_exists .envrcs/.envrc.gitignore → rebuild .gitignore from its template
-├── source_env_if_exists .envrcs/.envrc.from-template → create .envrc.{secrets,user} if missing
+├── source_env .envrcs/.envrc.gitignore → rebuild .gitignore from its template
+├── source_env .envrcs/.envrc.from-template → create .envrc.{secrets,user} if missing
 ├── source_env_if_exists .envrcs/.envrc.secrets
 │   └── .envrc.sops → use_sops on encrypted .env files
 └── source_env_if_exists .envrcs/.envrc.user

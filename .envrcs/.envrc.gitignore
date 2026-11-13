@@ -16,11 +16,24 @@ watch_file "$direnv_root/.gitignore.template" "$direnv_root/.gitignore.local"
 [ -f "$direnv_root/.gitignore.template" ] || return 0
 
 # A tracked .gitignore and a template both: rebuilding would dirty the
-# tracked file on every load. Refuse until one of them goes.
-if git -C "$direnv_root" ls-files --error-unmatch .gitignore >/dev/null 2>&1; then
+# tracked file on every load. Refuse until one of them goes. ls-files exits
+# 0 for tracked, 1 for untracked (present or not), 128 when git could not
+# tell; only 1 rebuilds.
+_gitignore_rc=0
+git -C "$direnv_root" ls-files --error-unmatch .gitignore >/dev/null 2>&1 || _gitignore_rc=$?
+case $_gitignore_rc in
+1) unset _gitignore_rc ;;
+0)
+    unset _gitignore_rc
     log_error ".gitignore is tracked; not rebuilding it from .gitignore.template (remove one of them)"
     return 0
-fi
+    ;;
+*)
+    unset _gitignore_rc
+    log_error "git could not say whether .gitignore is tracked; not rebuilding it"
+    return 0
+    ;;
+esac
 
 # A .gitignore that is not a regular file (a directory, say): mv would put
 # the rebuild inside it.
@@ -67,13 +80,25 @@ else
         if [ -e "$direnv_root/.gitignore.orig" ]; then
             rm -f "$_gitignore_tmp"
             log_error ".gitignore has rules the rebuild would drop, and .gitignore.orig exists; not rebuilding (move the rules you want into .gitignore.local, then delete .gitignore.orig)"
+        elif ! mv -f "$direnv_root/.gitignore" "$direnv_root/.gitignore.orig"; then
+            rm -f "$_gitignore_tmp"
+            log_error "could not move .gitignore to .gitignore.orig; the previous one is kept"
+        elif ! mv -f "$_gitignore_tmp" "$direnv_root/.gitignore"; then
+            # Put the old one back rather than leave no .gitignore at all.
+            rm -f "$_gitignore_tmp"
+            mv -f "$direnv_root/.gitignore.orig" "$direnv_root/.gitignore" ||
+                log_error "could not move .gitignore.orig back to .gitignore; nothing is ignored until it is"
+            log_error ".gitignore not rebuilt: the rename failed; the previous one is kept"
         else
-            mv -f "$direnv_root/.gitignore" "$direnv_root/.gitignore.orig"
-            mv -f "$_gitignore_tmp" "$direnv_root/.gitignore"
             log_status ".gitignore had rules the rebuild drops; the old file is .gitignore.orig (move the rules you want into .gitignore.local, then delete it)"
         fi
         ;;
-    1) mv -f "$_gitignore_tmp" "$direnv_root/.gitignore" ;;
+    1)
+        if ! mv -f "$_gitignore_tmp" "$direnv_root/.gitignore"; then
+            rm -f "$_gitignore_tmp"
+            log_error ".gitignore not rebuilt: the rename failed; the previous one, if any, is kept"
+        fi
+        ;;
     *)
         rm -f "$_gitignore_tmp"
         log_error "could not compare .gitignore with its rebuild; the previous one is kept"
