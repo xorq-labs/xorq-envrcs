@@ -2,9 +2,11 @@
 
 a repo to demonstrate `direnv` `.envrc` file organization
 
-The root `.envrc` exports `$direnv_root`, auto-creates the untracked local
-files from their tracked templates, and sources two fragments from
-`.envrcs/`. A fresh clone needs only `direnv allow`.
+The root `.envrc` exports `$direnv_root`, then sources fragments from
+`.envrcs/`: two that rebuild `.gitignore` and create the untracked local
+files from their tracked templates, then the secrets and user layers. A
+fresh clone needs only `direnv allow`. `tests/test-fragments.sh` tests the
+first two.
 
 ## three layers
 

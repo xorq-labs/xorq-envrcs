@@ -1,0 +1,37 @@
+# Rebuild the root .gitignore on every load: .gitignore.template, then the
+# untracked .gitignore.local (your own rules) if present. Edit those two,
+# never .gitignore: the next load overwrites it. tests/test-fragments.sh
+# tests this file. Why a rebuild and not a one-time copy, and how a repo opts
+# out: .envrcs/README.md, "The generated .gitignore".
+#
+# PWD is .envrcs/ here (source_env pushd's into it), so every path is
+# $direnv_root-prefixed; `return`, never `exit`, which would end direnv's
+# whole load.
+
+# Watch before the test, so adding a template later retriggers the reload.
+watch_file "$direnv_root/.gitignore.template" "$direnv_root/.gitignore.local"
+
+# No template: the repo keeps a .gitignore of its own. A silent no-op, as for
+# any layer whose template is not tracked.
+[ -f "$direnv_root/.gitignore.template" ] || return 0
+
+# A tracked .gitignore and a template both: rebuilding would dirty the
+# tracked file on every load. Refuse until one of them goes.
+if git -C "$direnv_root" ls-files --error-unmatch .gitignore >/dev/null 2>&1; then
+    log_error ".gitignore is tracked; not rebuilding it from .gitignore.template (remove one of them)"
+    return 0
+fi
+
+# Through a temp file renamed into place only after every read succeeded, so
+# an unreadable template keeps the old .gitignore. The echo keeps the
+# template's last rule off the first .gitignore.local line.
+_gitignore_tmp=$direnv_root/.gitignore.tmp.$$
+if { cat "$direnv_root/.gitignore.template" &&
+    { [ ! -f "$direnv_root/.gitignore.local" ] ||
+        { echo && cat "$direnv_root/.gitignore.local"; }; }; } >"$_gitignore_tmp"; then
+    mv -f "$_gitignore_tmp" "$direnv_root/.gitignore"
+else
+    rm -f "$_gitignore_tmp"
+    log_error ".gitignore not rebuilt; the previous one, if any, is kept"
+fi
+unset _gitignore_tmp
