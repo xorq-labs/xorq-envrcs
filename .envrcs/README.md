@@ -106,16 +106,18 @@ never `.gitignore`: the next load replaces it.
   `.gitignore` and a template, the fragment logs an error and leaves it
   alone: rebuilding would dirty the tracked file on every load.
 - **A rule the rebuild would drop is kept, in `.gitignore.orig`.** If the
-  old `.gitignore` holds a rule (a line that is not a comment or blank) the
-  new one lacks — one added by hand, one the template has since removed, or
+  old `.gitignore` holds a rule the new one lacks (compared as git reads
+  lines: trailing blanks and CR ignored, a comment is a `#` in column 0) — one added by hand, one the template has since removed, or
   the unanchored self-ignore of a checkout from before the rebuild — the
   load moves the old file to `.gitignore.orig` (ignored) and says so. Move
   the rules you want into `.gitignore.local`, then delete it. While
   `.gitignore.orig` exists, a `.gitignore` with such a rule is not rebuilt,
   and the load logs an error instead.
-- **An unreadable template keeps the old `.gitignore`.** The rebuild goes
-  through a temp file that replaces `.gitignore` only after every read
-  succeeded.
+- **An unreadable template keeps the old `.gitignore`,** and so does an
+  unreadable `.gitignore`, or an `awk` that fails: the rebuild goes through
+  a temp file that replaces `.gitignore` only after every read and the
+  comparison succeeded. A `.gitignore` that is not a regular file is left
+  alone, with an error.
 - The template's own entries are anchored (`/.gitignore`): unanchored, the
   self-ignore would also ignore every nested `.gitignore` in the tree.
 
@@ -586,7 +588,7 @@ evaluation directory isn't what you expect.
 Everything above describes this repo. Adopting the layout elsewhere is a
 different job, and these are its edges.
 
-**Prerequisites.** `direnv` always. `sops`, plus whatever key backend your
+**Prerequisites.** `direnv`, `git` and `awk` always. `sops`, plus whatever key backend your
 bundles use, only if you keep the secrets layer — and note that a missing
 `sops` fails *quietly*: the fragment logs `sops: command not found` and
 `sops --decrypt failed for ...`, the load continues, and nothing else

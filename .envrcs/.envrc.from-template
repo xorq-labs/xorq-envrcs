@@ -18,9 +18,11 @@
 # copied from the main checkout, and devcontainer's setup-worktree copies
 # only where they are absent, so creating them here first would leave the
 # worktree on the templates. Outside any repo, rev-parse fails and the git
-# check below refuses each file.
-if _from_template_dirs=$(git -C "$direnv_root" rev-parse --path-format=absolute \
-    --git-dir --git-common-dir 2>/dev/null) &&
+# check below refuses each file. GIT_DIR and friends are dropped so the
+# answer is about $direnv_root, not about whatever repo the shell exported.
+if _from_template_dirs=$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+    git -C "$direnv_root" rev-parse --path-format=absolute \
+        --git-dir --git-common-dir 2>/dev/null) &&
     [ "${_from_template_dirs%%$'\n'*}" != "${_from_template_dirs#*$'\n'}" ]; then
     unset _from_template_dirs
     log_status "linked git worktree: not creating .envrcs/.envrc.{secrets,user}; copy them from the main checkout"

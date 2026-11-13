@@ -64,7 +64,7 @@ loader='
     }
     cd "$direnv_root"
     source_env ".envrcs/$2"
-    for v in _gitignore_tmp _from_template_f _from_template_rc _from_template_dirs; do
+    for v in _gitignore_tmp _gitignore_rc _from_template_f _from_template_rc _from_template_dirs; do
         [ -z "${!v+set}" ] || echo "$v"
     done
 '
@@ -91,6 +91,7 @@ no_errors() { ! grep -q '^log_error' "$1"; }
 r=$work/g1
 scratch_repo "$r"
 leaked=$(load "$r" .envrc.gitignore)
+check "gitignore: a first build reports nothing" test ! -s "$r.err"
 check "gitignore: no .gitignore.local gives the template" cmp -s "$r/.gitignore" "$r/.gitignore.template"
 check "gitignore: leaves no variable set" test -z "$leaked"
 check "gitignore: the result ignores itself" git -C "$r" check-ignore -q .gitignore
@@ -136,6 +137,66 @@ scratch_repo "$r"
 printf '%s\n' '# an older header' '' '/.gitignore' >"$r/.gitignore"
 load "$r" .envrc.gitignore >/dev/null
 check "gitignore: a comment-only difference keeps no .gitignore.orig" test ! -e "$r/.gitignore.orig"
+
+# Lines compared as git reads them: CR and trailing blanks are not a dropped
+# rule; an indented '#' is a rule, not a comment.
+r=$work/k4
+scratch_repo "$r"
+sed 's/$/\r/' "$r/.gitignore.template" >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: CRLF line endings keep no .gitignore.orig" test ! -e "$r/.gitignore.orig"
+r=$work/k5
+scratch_repo "$r"
+sed 's/$/  /' "$r/.gitignore.template" >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: trailing blanks keep no .gitignore.orig" test ! -e "$r/.gitignore.orig"
+r=$work/k6
+scratch_repo "$r"
+printf '%s\n' '/.gitignore' '  # a pattern to git' >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: an indented '#' line is a rule, kept in .gitignore.orig" test -e "$r/.gitignore.orig"
+# A blank line the template lacks is not a rule.
+r=$work/k7
+scratch_repo "$r"
+echo '/.gitignore' >"$r/.gitignore.template"
+printf '%s\n' '/.gitignore' '' >"$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: a blank line keeps no .gitignore.orig" test ! -e "$r/.gitignore.orig"
+
+# awk that cannot say: exits other than 0 and 1 (here 127, as for no awk),
+# or an unreadable .gitignore read as empty (busybox awk exits 1). Either
+# way the old file, and its hand rule, are kept.
+mkdir "$work/awk-127" "$work/awk-1"
+printf '#!/bin/sh\nexit 127\n' >"$work/awk-127/awk"
+printf '#!/bin/sh\nexit 1\n' >"$work/awk-1/awk"
+chmod +x "$work/awk-127/awk" "$work/awk-1/awk"
+r=$work/k8
+scratch_repo "$r"
+echo 'scratch/' >"$r/.gitignore"
+PATH=$work/awk-127:$PATH load "$r" .envrc.gitignore >/dev/null
+check "gitignore: awk failing keeps the old .gitignore" test "$(cat "$r/.gitignore")" = scratch/
+check "gitignore: ... and says it could not compare" grep -q '^log_error: could not compare' "$r.err"
+check "gitignore: ... and leaves no temp file" no_tmp "$r"
+r=$work/k9
+scratch_repo "$r"
+echo 'scratch/' >"$r/.gitignore"
+chmod 000 "$r/.gitignore"
+if [ -r "$r/.gitignore" ]; then
+    echo "skip gitignore: unreadable .gitignore (running as root)"
+else
+    PATH=$work/awk-1:$PATH load "$r" .envrc.gitignore >/dev/null
+    chmod 600 "$r/.gitignore"
+    check "gitignore: an unreadable .gitignore is kept" test "$(cat "$r/.gitignore")" = scratch/
+    check "gitignore: ... and is reported" grep -q '^log_error: could not compare' "$r.err"
+fi
+
+# A .gitignore that is a directory: not rebuilt into.
+r=$work/k10
+scratch_repo "$r"
+mkdir "$r/.gitignore"
+load "$r" .envrc.gitignore >/dev/null
+check "gitignore: a .gitignore directory gets nothing inside" test -z "$(ls -A "$r/.gitignore")"
+check "gitignore: ... and is reported" grep -q 'not a regular file' "$r.err"
 
 # A .gitignore.orig already there: never overwritten; nothing is rebuilt.
 r=$work/k3
@@ -206,6 +267,10 @@ check "from-template: linked worktree creates neither file" \
 check "from-template: ... and says so" grep -q 'linked git worktree' "$work/t2-wt.err"
 check "from-template: ... as status, not as an error" no_errors "$work/t2-wt.err"
 check "from-template: ... and leaves no variable set" test -z "$leaked"
+rm -f "$work/t2-wt/.envrcs/.envrc.secrets" "$work/t2-wt/.envrcs/.envrc.user"
+GIT_DIR=$r/.git load "$work/t2-wt" .envrc.from-template >/dev/null
+check "from-template: a linked worktree under an exported GIT_DIR creates neither file" \
+    test ! -e "$work/t2-wt/.envrcs/.envrc.secrets" -a ! -e "$work/t2-wt/.envrcs/.envrc.user"
 
 # Fragments in a subdirectory of a checkout, and in a submodule: each is in
 # its repo's main checkout, so both files are created.
@@ -258,6 +323,9 @@ rm -rf "$r/.git"
 load "$r" .envrc.from-template >/dev/null
 check "from-template: no .git creates neither file" \
     test ! -e "$r/.envrcs/.envrc.secrets" -a ! -e "$r/.envrcs/.envrc.user"
+# git's own reason, once per file from check-ignore; none from the guard.
+check "from-template: ... and git's error appears once per file" \
+    test "$(grep -c '^fatal:' "$r.err")" = 2
 
 # git that cannot answer: a corrupt index makes check-ignore exit 128.
 r=$work/t7
