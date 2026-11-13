@@ -35,3 +35,11 @@ why the ignore rules have to go in before the first `direnv allow`.
 See [`.envrcs/README.md`](.envrcs/README.md) for the fragment-by-fragment
 reference — auto-create rules and how to disable a fragment, the sops
 helpers, path conventions, and the concatenated-bundle design.
+
+## merging
+
+PRs are squash-merged, the only method the repo allows. The squash title
+defaults to the PR title, or to the commit's subject on a one-commit branch,
+and the message to the branch's commit messages. No CI runs: before merging,
+run `bash tests/test-fragments.sh` on the head with main merged in. A pass
+says nothing about `.envrc` or the other fragments.
