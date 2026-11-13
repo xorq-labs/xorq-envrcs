@@ -6,6 +6,8 @@ direnv configuration split into composable fragments, sourced from the root `.en
 
 | File | Purpose |
 |---|---|
+| `.envrc.gitignore` | Rebuilds the root `.gitignore` from `.gitignore.template` on every load; a no-op without the template |
+| `.envrc.from-template` | Creates `.envrc.secrets` and `.envrc.user` from their templates, in a main checkout, where git ignores them |
 | `.envrc.sops` | Defines `use_sops` and `use_sops_if_exists` for decrypting secrets |
 | `.envrc.nix-config` | Bootstraps nix-direnv; where to `watch_file` imported nix modules |
 | `.envrc.secrets.template` | Decrypts `.env.secrets.demo.sops-encrypted`; shows how to add further bundles |
@@ -20,13 +22,14 @@ direnv configuration split into composable fragments, sourced from the root `.en
 | `demo-age-key.txt` | Throwaway private key for the demo bundle — committed on purpose, see below |
 
 The root also tracks `.gitignore.template`, which generates the repo's
-`.gitignore` (see below).
+`.gitignore` (see below), and `tests/test-fragments.sh`, which tests
+`.envrc.gitignore` and `.envrc.from-template`.
 
 ## Untracked (local / secret)
 
 Never commit these. The generated `.gitignore` covers them — but only the
-generated one: the root `.envrc` skips the auto-create when the repo already
-has a `.gitignore`, which is the normal case for a repo adopting this layout.
+generated one. A repo adopting this layout often keeps a `.gitignore` of its
+own and does not track the template, and then nothing is generated.
 **If you brought your own `.gitignore`, add these rules to it yourself:**
 
 ```gitignore
@@ -50,15 +53,16 @@ has a `.gitignore`, which is the normal case for a repo adopting this layout.
 !*.sops-encrypted
 ```
 
-This is the whole of `.gitignore.template` minus its self-ignore line; if the
-two ever drift, that file is the source of truth.
+This is the whole of `.gitignore.template` minus its three `/.gitignore*`
+lines; if the two ever drift, that file is the source of truth.
 
-Until you do, `direnv allow` creates `.envrcs/.envrc.secrets` as an ordinary
-untracked file that `git add -A` will happily stage. By default it holds no
-secret material — `source_env .envrc.sops`, and a `use sops_if_exists` call
-prefixed with `SOPS_AGE_KEY_FILE=...` for the demo bundle — but it is a
-shell fragment, so a stray `export SECRET=...` typed into it would be staged
-too, and mode `600` protects it from other local users, not from git.
+Until you do, `direnv allow` creates neither `.envrcs/.envrc.secrets` nor
+`.envrcs/.envrc.user`, and logs an error for each: `.envrc.from-template`
+creates a file only where `git check-ignore` says it is ignored. Created
+unignored, `.envrc.secrets` would hold no secret at first, but it is a shell
+fragment, so an `export SECRET=...` typed into it later would be staged by
+`git add -A`, and mode `600` protects it from other local users, not from
+git.
 
 | File | Created from | Auto-created? |
 |---|---|---|
@@ -87,13 +91,57 @@ and cannot become the default for a real bundle. A real bundle is encrypted
 to the recipients who should read it, and their private keys never enter the
 repo.
 
+## The generated .gitignore
+
+`.envrc.gitignore` rebuilds the root `.gitignore` on every load:
+`.gitignore.template`, then `.gitignore.local` (your own rules, untracked) if
+it exists. A rebuild rather than a one-time copy, so a template change
+reaches every checkout on its next reload; a one-time copy never updates a
+`.gitignore` that already exists. Edit the template or `.gitignore.local`,
+never `.gitignore`: the next load replaces it.
+
+- **No template, no rebuild.** A repo that keeps a `.gitignore` of its own
+  does not track `.gitignore.template`, and the fragment does nothing.
+- **A tracked `.gitignore` is never overwritten.** With both a tracked
+  `.gitignore` and a template, the fragment logs an error and leaves it
+  alone: rebuilding would dirty the tracked file on every load.
+- **A rule the rebuild would drop is kept, in `.gitignore.orig`.** If the
+  old `.gitignore` holds a rule the new one lacks (compared as git reads
+  lines: trailing blanks and CR ignored, a comment is a `#` in column 0) — one added by hand, one the template has since removed, or
+  the unanchored self-ignore of a checkout from before the rebuild — the
+  load moves the old file to `.gitignore.orig` (ignored) and says so. Move
+  the rules you want into `.gitignore.local`, then delete it. While
+  `.gitignore.orig` exists, a `.gitignore` with such a rule is not rebuilt,
+  and the load logs an error instead.
+- **An unreadable template keeps the old `.gitignore`,** and so does an
+  unreadable `.gitignore`, or an `awk` that fails: the rebuild goes through
+  a temp file that replaces `.gitignore` only after every read and the
+  comparison succeeded. A `.gitignore` that is not a regular file is left
+  alone, with an error.
+- The template's own entries are anchored (`/.gitignore`): unanchored, the
+  self-ignore would also ignore every nested `.gitignore` in the tree.
+
+`.gitignore` itself is not watched: while a shell stays in the repo, a
+deleted or hand-edited one stays that way until the next load (a change to
+a watched file, or `direnv reload`).
+
 ## Auto-create, and how to disable a fragment
 
-The root `.envrc` creates `.gitignore`, `.envrc.secrets` and `.envrc.user`
-from their templates if they are missing, so `direnv allow` is the only step
-on a fresh clone. Existing files are never overwritten — a repo adopting this
-layout keeps its own `.gitignore`, and a symlink to a template counts as
-existing.
+`.envrc.from-template` creates `.envrc.secrets` and `.envrc.user` from their
+templates if they are missing, so `direnv allow` is the only step on a fresh
+clone. Existing files are never overwritten, and a symlink to a template
+counts as existing. Two conditions, each logged when it stops a file:
+
+- **Not in a linked worktree.** There, copy the two files from the main
+  checkout instead; devcontainer's `setup-worktree` does, but only where
+  they are absent, so creating them first would leave the worktree on the
+  templates. A subdirectory of a checkout and a submodule are not linked
+  worktrees; outside any git repository, the next condition fails.
+- **Only where git ignores the file**, so a fragment that will later be
+  edited to hold a secret is never created stageable: under a `.gitignore`
+  that lacks the rules, after a failed rebuild, or under a
+  `.gitignore.local` that re-includes it. If git cannot answer, nothing is
+  created and the error says so.
 
 Because of the auto-create, **deleting one of these files does not disable
 it** — it is recreated from the template on the next `direnv allow`/reload.
@@ -115,9 +163,13 @@ when sourced.
 
 **To drop a layer for the whole repo, stop tracking its template.** The
 auto-create skips a file whose template is absent, and the root `.envrc`
-sources each fragment with `source_env_if_exists`, so a missing layer is a
+sources each layer with `source_env_if_exists`, so a missing layer is a
 silent no-op rather than an error on every reload (or an aborted load under
-`strict_env`). The root `.envrc` needs no edit, which keeps it identical
+`strict_env`). The two step fragments, `.envrc.gitignore` and
+`.envrc.from-template`, are the opposite: sourced with plain `source_env`,
+because each opts out through its templates, never by being absent. A
+missing one is a broken copy, and direnv says `referenced … does not exist`
+on every load (under `strict_env`, the load stops). The root `.envrc` needs no edit, which keeps it identical
 across every repo using this layout. Two consequences:
 
 - Checkouts that already generated the fragment keep sourcing it; removing
@@ -540,7 +592,7 @@ evaluation directory isn't what you expect.
 Everything above describes this repo. Adopting the layout elsewhere is a
 different job, and these are its edges.
 
-**Prerequisites.** `direnv` always. `sops`, plus whatever key backend your
+**Prerequisites.** `direnv`, `git` 2.31 or newer, and `awk` always. `sops`, plus whatever key backend your
 bundles use, only if you keep the secrets layer — and note that a missing
 `sops` fails *quietly*: the fragment logs `sops: command not found` and
 `sops --decrypt failed for ...`, the load continues, and nothing else
@@ -554,12 +606,16 @@ there and no-ops. The templates are optional too: leave out
 `.envrc.secrets.template` (with `.envrc.sops` and the demo files) if you have
 no sops secrets, or `.gitignore.template` if you already keep a
 `.gitignore` of your own — see
-[Auto-create](#auto-create-and-how-to-disable-a-fragment).
+[The generated .gitignore](#the-generated-gitignore).
 
-**Fix your `.gitignore` before the first `direnv allow`, not after.** The
-auto-create skips an existing `.gitignore`, so `.envrcs/.envrc.secrets` and
-`.envrcs/.envrc.user` are stageable from the moment they are created. Three
-things to do, in this order:
+**If you keep your own `.gitignore`, fix it before the first `direnv
+allow`.** Until it ignores `.envrcs/.envrc.secrets` and `.envrcs/.envrc.user`,
+the auto-create refuses both, logging an error for each, and neither layer
+loads. If instead you track `.gitignore.template`, untrack your `.gitignore`
+(`git rm --cached .gitignore`) and move its rules into the template;
+`.envrc.gitignore` refuses to rebuild a tracked one, and a load in between
+keeps the rules not yet moved in `.gitignore.orig`. Three things to do for
+your own `.gitignore`, in this order:
 
 1. Add the block from [Untracked](#untracked-local--secret) **at the end of
    your file**. "The negations come last" means last overall, not last within
@@ -629,7 +685,8 @@ Deliberately not done, so they are not mistaken for oversights:
 ```
 .envrc (repo root)
 ├── export direnv_root
-├── auto-create .gitignore, .envrcs/.envrc.{secrets,user} if missing
+├── source_env .envrcs/.envrc.gitignore → rebuild .gitignore from its template
+├── source_env .envrcs/.envrc.from-template → create .envrc.{secrets,user} if missing
 ├── source_env_if_exists .envrcs/.envrc.secrets
 │   └── .envrc.sops → use_sops on encrypted .env files
 └── source_env_if_exists .envrcs/.envrc.user
