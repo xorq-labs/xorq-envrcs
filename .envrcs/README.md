@@ -119,8 +119,9 @@ never `.gitignore`: the next load replaces it.
 - The template's own entries are anchored (`/.gitignore`): unanchored, the
   self-ignore would also ignore every nested `.gitignore` in the tree.
 
-While a shell stays in the repo, only a change to a watched file triggers a
-load, so a deleted `.gitignore` stays gone until the next load.
+`.gitignore` itself is not watched: while a shell stays in the repo, a
+deleted or hand-edited one stays that way until the next load (a change to
+a watched file, or `direnv reload`).
 
 ## Auto-create, and how to disable a fragment
 
