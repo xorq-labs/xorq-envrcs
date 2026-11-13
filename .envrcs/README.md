@@ -588,7 +588,7 @@ evaluation directory isn't what you expect.
 Everything above describes this repo. Adopting the layout elsewhere is a
 different job, and these are its edges.
 
-**Prerequisites.** `direnv`, `git` and `awk` always. `sops`, plus whatever key backend your
+**Prerequisites.** `direnv`, `git` 2.31 or newer, and `awk` always. `sops`, plus whatever key backend your
 bundles use, only if you keep the secrets layer — and note that a missing
 `sops` fails *quietly*: the fragment logs `sops: command not found` and
 `sops --decrypt failed for ...`, the load continues, and nothing else

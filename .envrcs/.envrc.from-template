@@ -20,6 +20,8 @@
 # worktree on the templates. Outside any repo, rev-parse fails and the git
 # check below refuses each file. GIT_DIR and friends are dropped so the
 # answer is about $direnv_root, not about whatever repo the shell exported.
+# Needs git 2.31 or newer: older git echoes --path-format=absolute back and
+# exits 0, so every checkout reads as a linked worktree.
 if _from_template_dirs=$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
     git -C "$direnv_root" rev-parse --path-format=absolute \
         --git-dir --git-common-dir 2>/dev/null) &&
