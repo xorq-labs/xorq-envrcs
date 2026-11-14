@@ -488,12 +488,10 @@ searches upward and builds the right flake, so a bare `use flake` *works*
 while watching the wrong lock file. The fragment passes `$direnv_root`
 explicitly *and* runs from it; the comment on those lines says what each one
 costs. The layout dir is the root `.envrc`'s job: it asks `direnv_layout_dir`
-once, from the root, and pins the function to the answer. So a direnvrc that
-keys layouts on `$PWD` (the direnv wiki's `~/.cache/direnv/layouts/` recipe)
-cannot give a fragment that stays in `.envrcs/` a second, `--envrcs`-keyed
-layout dir whose `{nix,flake}-profile*` GC roots nothing ever cleans up.
-Pulling the new `.envrc` does not remove dirs already created that way:
-delete `~/.cache/direnv/layouts/*--envrcs` once.
+once, from the root, and pins the function to the answer; the comment there
+says why. A checkout that loaded an older `.envrc` under a `$PWD`-keyed
+direnvrc may hold a stray `~/.cache/direnv/layouts/*--envrcs`; pulling does
+not remove it, so delete it once.
 
 ## kenn
 
