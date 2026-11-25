@@ -600,12 +600,14 @@ while watching the wrong lock file. The fragment passes `$direnv_root`
 explicitly *and* runs from it; the comment on those lines says what each one
 costs. The layout dir is the root `.envrc`'s job: it asks `direnv_layout_dir`
 once, from the root, and pins the function to the answer; the comment there
-says why. A checkout that loaded an `.envrc` from before that pin (#9) under
-a direnvrc keying layouts on `$PWD` — the direnv wiki's
+says why. A checkout that loaded an `.envrc` from before that pin
+([#9](https://github.com/xorq-labs/xorq-envrcs/pull/9)) under a direnvrc
+keying layouts on `$PWD` — the direnv wiki's
 [cache-location recipes](https://github.com/direnv/direnv/wiki/Customizing-cache-location)
 — may hold a second layout dir, keyed on its `.envrcs/` path. Pulling does
-not remove it. From the checkout's root, in bash, this lists it under the
-wiki's human-readable recipe (the name ends in the path, `…--envrcs`):
+not remove it. From the checkout's root, entered by the same path you load it
+from (not through a symlink to it, or the other way round), in bash, this
+lists it under the wiki's human-readable recipe (the name ends in the path, `…--envrcs`):
 
 ```sh
 ls -d "${XDG_CACHE_HOME:-$HOME/.cache}"/direnv/layouts/*"${PWD//[^a-zA-Z0-9]/-}--envrcs"
