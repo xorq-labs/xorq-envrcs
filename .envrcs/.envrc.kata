@@ -16,6 +16,10 @@ elif sops_wrap --set KATA_SERVER="$KATA_TEAM_SERVER" --set KATA_TRUST_PRIVATE_NE
     # KATA_TRUST_PRIVATE_NETWORK lets kata send the token over plain http to
     # any literal private IP (the tailnet's is in 100.64.0.0/10), never to a
     # name or a public IP; KATA_ALLOW_INSECURE would lift both, so it goes.
+    # From this shell only: the wrapper passes on what its caller exports, so
+    # a caller that sets KATA_ALLOW_INSECURE=1 lifts both for that call, and
+    # the token can go over plain http to the baked server even when that is
+    # a name or a public IP. An accepted limit (kata xorq-envrcs#bsag).
     # The token itself is never exported: the wrapper decrypts it per call
     # and sets KATA_AUTH_TOKEN (what a KATA_SERVER route reads) and
     # KATA_TEAM_TOKEN (what a daemon catalog's token_env names) for that one

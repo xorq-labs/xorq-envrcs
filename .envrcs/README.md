@@ -525,8 +525,12 @@ can replace `sops-bin`, as they could `.envrc`.
 
 **What it cannot wrap.** The commands the wrapper itself runs through PATH —
 `bash`, `env`, `dirname`, `sed`, `sops`, `gpg`, `gpg2` — are refused: wrapped,
-each would resolve back to the wrapper. Any identifier works as an `ENV` or
-`--set` name; none can change which binary the wrapper runs.
+each would resolve back to the wrapper. No `ENV` or `--set` name can change
+which binary the wrapper runs. bash's readonly names — `UID`, `EUID`,
+`PPID`, `SHELLOPTS`, `BASHOPTS` — are not refused at wiring, though: the
+wrapper's `export` of one fails, so every call fails with `readonly
+variable`, naming the variable and not its value. Pick another name; this
+is an accepted limit (kata xorq-envrcs#pdaz).
 
 **Order.** `PATH_add` prepends, so call `sops_wrap` after whatever brings the
 tool onto PATH — `.envrc.kata` after `.envrc.user.kenn`. The wrapper finds
@@ -653,7 +657,9 @@ load re-evaluates the flake (a few seconds), offline after the first.
 
 `.envrc.kata` points kata at a team server: it exports `KATA_SERVER` from
 `KATA_TEAM_SERVER`, sets `KATA_TRUST_PRIVATE_NETWORK=1`, unsets
-`KATA_ALLOW_INSECURE`, and wraps kata with
+`KATA_ALLOW_INSECURE` in the shell (a caller that exports it again still
+reaches the wrapped kata: the comment in `.envrc.kata` says what that
+lifts), and wraps kata with
 [`sops_wrap`](#per-call-secrets-sops_wrap) so the token never enters the
 environment. Opt in with `source_env .envrc.kata` in `.envrc.user` (a file
 older than this fragment lacks the commented line: add it), after
