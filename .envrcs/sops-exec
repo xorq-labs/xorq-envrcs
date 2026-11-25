@@ -95,8 +95,13 @@ for pair in $map; do
         # sops's dotenv store reads the two characters \n as a newline
         # (README, "Quotes", names the escapes tried); a dotenv line cannot
         # hold a real one, so turning each back restores the stored bytes,
-        # which is what direnv dotenv reads.
-        value=${value//$'\n'/\\n}
+        # which is what direnv dotenv reads. Not in a double-quoted value:
+        # direnv dotenv reads \n there as a newline too, so sops's newline
+        # is already what use_sops delivers.
+        case $value in
+        '"'*'"') ;;
+        *) value=${value//$'\n'/\\n} ;;
+        esac
         # One matching pair of quotes off: README, "Quotes". Inside double
         # quotes direnv dotenv also expands `$` and `\`, which this does
         # not; unquoted, it ends the value at a `#` and trims or refuses

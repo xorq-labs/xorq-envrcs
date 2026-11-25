@@ -562,8 +562,10 @@ once in a terminal, which warms the cache for the agent shells after it. A
 `direnv dotenv` strips and expands them. One exception: `sops --extract`
 turns the two characters `\n` into a newline (sops 3.13.3; of `\n`, `\t`,
 `\r`, `\\` and `\"`, the one it decodes), and the wrapper turns each
-newline back. Beyond that it strips one matching pair
-of `'` or `"` and changes nothing else, so a value single-quoted per
+newline back, except in a double-quoted value, where `direnv dotenv`
+reads `\n` as a newline too (direnv 2.37.1). Beyond that it strips one
+matching pair of `'` or `"` and changes nothing else, so a value
+single-quoted per
 [the rule above](#quote-values-containing-) reaches the tool exactly as
 `use_sops` delivers it — and an unquoted `$` is not truncated. A
 double-quoted value holding `\` or `$` is refused per call, naming the key:
