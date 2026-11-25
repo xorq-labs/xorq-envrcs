@@ -81,6 +81,17 @@ PATH=$work/w/show:$other/w/show:$bin:$PATH STUB_VALUE=zq9 \
     timeout 10 "$work/w/show/show" </dev/null >"$work/out" 2>"$work/err" || rc=$?
 check "another checkout's wrapper on PATH is skipped" got 'X=[zq9]'
 
+# The marker counts on line 2 only: a real tool that carries the same text
+# on a later line (here a script quoting it) is still the one run.
+late=$work/late
+mkdir -p "$late"
+printf '#!/usr/bin/env bash\n# a tool, not a wrapper\n# sops_wrap wrapper (quoted)\necho late-ran\n' >"$late/show"
+chmod +x "$late/show"
+rc=0
+PATH=$work/w/show:$late:$bin:$PATH STUB_VALUE=zq9 \
+    "$work/w/show/show" </dev/null >"$work/out" 2>"$work/err" || rc=$?
+check "a tool with the marker text on a later line is run" got 'late-ran'
+
 # --- quotes: delivered as use_sops delivers it, or refused (README, "Quotes") ---
 
 call show zq9 || true
@@ -95,7 +106,7 @@ call show $'\'a\nb\'' || true
 check "a single-quoted \\n reaches the tool as \\n" got 'X=[a\nb]'
 call show $'zq9\n\n' || true
 check "trailing \\n's reach the tool" got 'X=[zq9\n\n]'
-for v in 'zq9 # note' 'zq9#note' 'zq9 x' ' zq9' 'zq9 '; do
+for v in 'zq9 # note' 'zq9#note' 'zq9 x' ' zq9' 'zq9 ' $'zq9\tx'; do
     rc=0; call show "$v" || rc=$?
     check "unquoted '$v' is refused, naming the key" \
         refused "$rc" 'K in /dev/null is unquoted with whitespace or # in it' "$v"
