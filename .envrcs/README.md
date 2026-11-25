@@ -24,8 +24,9 @@ direnv configuration split into composable fragments, sourced from the root `.en
 | `demo-age-key.txt` | Throwaway private key for the demo bundle — committed on purpose, see below |
 
 The root also tracks `.gitignore.template`, which generates the repo's
-`.gitignore` (see below), and `tests/test-fragments.sh`, which tests
-`.envrc.gitignore` and `.envrc.from-template`.
+`.gitignore` (see below), `tests/test-fragments.sh`, which tests
+`.envrc.gitignore` and `.envrc.from-template`, and `tests/test-sops-exec.sh`,
+which tests `sops-exec`.
 
 ## Untracked (local / secret)
 
@@ -543,7 +544,10 @@ the terminal that launched it, so a cold cache would draw a prompt there and
 wait forever. When no fd is a tty, every sops call here — `use_sops` at
 reload and the wrapper per call — runs gpg through `sops-gpg-no-pinentry`,
 which adds `--pinentry-mode error` to your own `SOPS_GPG_EXEC` (default
-`gpg`), so a cold cache fails in milliseconds. One function, `_sops_pick_gpg`
+`gpg`), so a cold cache fails in milliseconds. That turns off a graphical
+pinentry too: a load with no tty, such as one an editor's direnv integration
+runs, fails a cold PGP decrypt where it used to open a dialog, and logs
+`sops --decrypt failed`. One function, `_sops_pick_gpg`
 in `sops-exec`, makes that choice for all of them, from outside any `$(...)`,
 where stdout would always look like a pipe. The fix it names: run the tool
 once in a terminal, which warms the cache for the agent shells after it. A
@@ -659,19 +663,44 @@ The token is the `KATA_TEAM_TOKEN` key of a sops bundle:
 `.envrcs/.env.secrets.kata.sops-encrypted`, or the one `kata_team_bundle`
 names in `.envrc.secrets`. Do not also `use` that bundle — see
 [the ambient rule](#per-call-secrets-sops_wrap). It is your own identity
-token, so the bundle is yours alone and must stay untracked. A `.gitignore`
-generated from the current template ignores the default name; the root
-`.envrc` never rewrites an existing one, so a checkout older than that line
-needs it added by hand (`git check-ignore -v` on the bundle tells you), and
-so does any other name you give `kata_team_bundle`, which
-`!*.sops-encrypted` would otherwise re-include. A new worktree does not
-have the bundle until you add a
-`symlink	.envrcs/.env.secrets.kata.sops-encrypted` line to your
-`.envrcs/.worktree-manifest`, which is per-checkout and untracked.
+token, so the bundle is yours alone and must stay untracked. The template
+ignores the default name, and the next load rebuilds `.gitignore` with it.
+Any other name you give `kata_team_bundle` goes on its own line in
+`.gitignore.local`, which the rebuild appends after the template, so it
+comes after `!*.sops-encrypted`; a line added to `.gitignore` itself is
+dropped by the next rebuild ([The generated .gitignore](#the-generated-gitignore)).
+`git check-ignore -v <bundle>` names the rule that ignores it. A new
+worktree does not have the bundle until the main checkout's
+`.envrcs/.worktree-symlinks`, which `setup-worktree` reads (one path per
+line, untracked), lists `.envrcs/.env.secrets.kata.sops-encrypted`.
+
+To make the bundle, with the token pasted at a prompt that does not echo
+(`printf` is a shell builtin, so the token is in no process's argv):
+
+```sh
+bundle=.envrcs/.env.secrets.kata.sops-encrypted
+read -rs KATA_TEAM_TOKEN &&
+  printf 'KATA_TEAM_TOKEN=%s\n' "$KATA_TEAM_TOKEN" |
+  sops --encrypt --pgp "$FPR" --input-type dotenv --output-type dotenv /dev/stdin \
+  > "$bundle.tmp" &&
+  mv "$bundle.tmp" "$bundle"
+unset KATA_TEAM_TOKEN
+```
 
 A token that an earlier version of this fragment read from an ambient bundle
 moves out of it into this one; leaving it there is what the ambient rule
-forbids, and the fragment unsets it anyway.
+forbids, and the fragment unsets it anyway. `pipefail` keeps a failed
+decrypt from writing an empty bundle over either file:
+
+```sh
+old=.envrcs/.env.secrets.concatenated.sops-encrypted  # the ambient one
+bundle=.envrcs/.env.secrets.kata.sops-encrypted
+dec() { sops --decrypt --input-type dotenv --output-type dotenv "$old"; }
+enc() { sops --encrypt --pgp "$FPR" --input-type dotenv --output-type dotenv /dev/stdin; }
+( set -o pipefail; dec | grep '^KATA_TEAM_TOKEN=' | enc > "$bundle.tmp" ) &&
+  ( set -o pipefail; dec | grep -v '^KATA_TEAM_TOKEN=' | enc > "$old.tmp" ) &&
+  mv "$bundle.tmp" "$bundle" && mv "$old.tmp" "$old"
+```
 
 **Two names out, both per call.** The wrapper sets `KATA_AUTH_TOKEN`, which
 a `KATA_SERVER` route reads, and `KATA_TEAM_TOKEN`, which a daemon catalog
