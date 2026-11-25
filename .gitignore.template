@@ -1,8 +1,12 @@
-# Auto-created as `.gitignore` by the root `.envrc`. This template is tracked;
-# the generated `.gitignore` is untracked and ignores itself, so a repo
-# adopting this layout keeps whatever `.gitignore` it already has (the
-# auto-create skips an existing file).
-.gitignore
+# Rebuilt as `.gitignore` on every direnv load by .envrcs/.envrc.gitignore:
+# this template, then the untracked `.gitignore.local` (your own rules) if
+# present. Edit those, never `.gitignore`. A repo that keeps a `.gitignore`
+# of its own does not track this template, and nothing is rebuilt.
+# Anchored: unanchored, `.gitignore` would also ignore every nested one.
+/.gitignore
+/.gitignore.local
+/.gitignore.orig
+/.gitignore.tmp.*
 
 # Build products of the user layer: .direnv is direnv's own cache, .venv is
 # created by `uv sync`, /result* by a nix build. The last two are anchored
