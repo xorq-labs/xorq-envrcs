@@ -558,7 +558,10 @@ once in a terminal, which warms the cache for the agent shells after it. A
 `use`d bundle under the same key warms it at every terminal reload.
 
 **Quotes.** sops stores dotenv values verbatim, quotes included, where
-`direnv dotenv` strips and expands them. The wrapper strips one matching pair
+`direnv dotenv` strips and expands them. One exception: `sops --extract`
+turns the two characters `\n` into a newline (sops 3.13.3; of `\n`, `\t`,
+`\r`, `\\` and `\"`, the one it decodes), and the wrapper turns each
+newline back. Beyond that it strips one matching pair
 of `'` or `"` and changes nothing else, so a value single-quoted per
 [the rule above](#quote-values-containing-) reaches the tool exactly as
 `use_sops` delivers it — and an unquoted `$` is not truncated. A
@@ -675,8 +678,9 @@ token, so the bundle is yours alone and must stay untracked. The template
 ignores the default name, and the next load rebuilds `.gitignore` with it.
 Any other name you give `kata_team_bundle` goes on its own line in
 `.gitignore.local`, which the rebuild appends after the template, so it
-comes after `!*.sops-encrypted`; a line added to `.gitignore` itself is
-dropped by the next rebuild ([The generated .gitignore](#the-generated-gitignore)).
+comes after `!*.sops-encrypted`; a line added to `.gitignore` itself makes
+the next rebuild move that file aside to `.gitignore.orig`, or refuse while
+one exists ([The generated .gitignore](#the-generated-gitignore)).
 `git check-ignore -v <bundle>` names the rule that ignores it. A new
 worktree does not have the bundle until the main checkout's
 `.envrcs/.worktree-symlinks`, which `setup-worktree` reads (one path per
@@ -697,18 +701,27 @@ unset KATA_TEAM_TOKEN
 
 A token that an earlier version of this fragment read from an ambient bundle
 moves out of it into this one; leaving it there is what the ambient rule
-forbids, and the fragment unsets it anyway. `pipefail` keeps a failed
-decrypt from writing an empty bundle over either file:
+forbids, and the fragment unsets it anyway. The token is written to the new
+bundle before `sops unset` removes it from the old one, which keeps the old
+bundle's recipients; `pipefail` keeps a failed decrypt from writing an empty
+bundle. When nothing moves — no token in the old bundle, or a step
+failed — the last line says so, and `$bundle.tmp` may be left (ignored):
 
 ```sh
 old=.envrcs/.env.secrets.concatenated.sops-encrypted  # the ambient one
 bundle=.envrcs/.env.secrets.kata.sops-encrypted
-dec() { sops --decrypt --input-type dotenv --output-type dotenv "$old"; }
-enc() { sops --encrypt --pgp "$FPR" --input-type dotenv --output-type dotenv /dev/stdin; }
-( set -o pipefail; dec | grep '^KATA_TEAM_TOKEN=' | enc > "$bundle.tmp" ) &&
-  ( set -o pipefail; dec | grep -v '^KATA_TEAM_TOKEN=' | enc > "$old.tmp" ) &&
-  mv "$bundle.tmp" "$bundle" && mv "$old.tmp" "$old"
+( set -o pipefail
+  sops --decrypt --input-type dotenv --output-type dotenv "$old" |
+    grep '^KATA_TEAM_TOKEN=' |
+    sops --encrypt --pgp "$FPR" --input-type dotenv --output-type dotenv /dev/stdin \
+    > "$bundle.tmp" ) &&
+  mv "$bundle.tmp" "$bundle" &&
+  sops unset --input-type dotenv --output-type dotenv "$old" '["KATA_TEAM_TOKEN"]' ||
+  echo "KATA_TEAM_TOKEN not moved out of $old; see the sops message above, if any" >&2
 ```
+
+Then delete the `KATA_TEAM_TOKEN=` line from the plaintext files you
+concatenate into `$old`; the next re-encrypt from them puts it back otherwise.
 
 **Two names out, both per call.** The wrapper sets `KATA_AUTH_TOKEN`, which
 a `KATA_SERVER` route reads, and `KATA_TEAM_TOKEN`, which a daemon catalog

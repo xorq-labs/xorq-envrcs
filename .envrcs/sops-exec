@@ -85,14 +85,22 @@ for pair in $map; do
         i=$((i + 1))
     done
     if [ $i -eq ${#keys[@]} ]; then
-        if ! value=$(_sops_run --decrypt --extract "[\"$key\"]" --input-type dotenv --output-type binary "$bundle"); then
+        # The trailing x keeps the value's trailing newlines, which $(...)
+        # would strip: --output-type binary adds none of its own.
+        if ! value=$(_sops_run --decrypt --extract "[\"$key\"]" --input-type dotenv --output-type binary "$bundle" && printf x); then
             echo "$tool: could not decrypt $key from $bundle; if the gpg cache is cold, run \`$tool\` once in a terminal" >&2
             exit 1
         fi
+        value=${value%x}
+        # sops's dotenv store reads the two characters \n as a newline
+        # (README, "Quotes", names the escapes tried); a dotenv line cannot
+        # hold a real one, so turning each back restores the stored bytes,
+        # which is what direnv dotenv reads.
+        value=${value//$'\n'/\\n}
         # One matching pair of quotes off: README, "Quotes". Inside double
         # quotes direnv dotenv also expands `$` and `\`, which this does
         # not; unquoted, it ends the value at a `#` and trims or refuses
-        # whitespace. Either such value is refused rather than delivered
+        # whitespace. Those two forms are refused rather than delivered
         # differently from use_sops. The message names the key, never the
         # value.
         case $value in

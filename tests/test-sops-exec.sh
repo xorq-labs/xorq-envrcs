@@ -3,8 +3,8 @@
 # directly: each case lays out a wrapper directory by hand (the link and its
 # .sops-wrap) rather than through sops_wrap, so direnv is not needed. `sops`
 # is a stub that prints $STUB_VALUE as the decrypted value, so no key and no
-# real bundle are involved; values here are dummies. Needs bash, sed and
-# timeout.
+# real bundle are involved; values here are dummies. Needs bash, sed,
+# timeout, and a `true` on disk (`type -P true`), not only the builtin.
 # Not a full harness for sops_wrap: that is kata xorq-envrcs#2eg8.
 #
 # Usage: tests/test-sops-exec.sh   (tests the working tree it sits in)
@@ -17,8 +17,11 @@ failures=0
 
 bin=$work/bin
 mkdir -p "$bin"
+# No newline after the value: `sops --extract --output-type binary` adds
+# none (sops 3.13.3, od -c). A value holding `\n` is stored as those two
+# characters and printed with a real newline, as sops decodes it.
 # shellcheck disable=SC2016 # for the stub to expand
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$STUB_VALUE"\n' >"$bin/sops"
+printf '#!/usr/bin/env bash\nprintf "%%s" "$STUB_VALUE"\n' >"$bin/sops"
 # shellcheck disable=SC2016 # for the stub to expand
 printf '#!/usr/bin/env bash\nprintf "X=[%%s]\\n" "${X-unset}"\n' >"$bin/show"
 chmod +x "$bin/sops" "$bin/show"
@@ -78,12 +81,20 @@ PATH=$work/w/show:$other/w/show:$bin:$PATH STUB_VALUE=zq9 \
     timeout 10 "$work/w/show/show" </dev/null >"$work/out" 2>"$work/err" || rc=$?
 check "another checkout's wrapper on PATH is skipped" got 'X=[zq9]'
 
-# --- quotes: a value use_sops would read differently is refused ---
+# --- quotes: delivered as use_sops delivers it, or refused (README, "Quotes") ---
 
 call show zq9 || true
 check "a plain value reaches the tool" got 'X=[zq9]'
 call show "'a b#c'" || true
 check "a single-quoted value with space and # reaches the tool, unquoted" got 'X=[a b#c]'
+# sops decodes a stored \n to a newline; use_sops delivers the two
+# characters, so the wrapper turns it back. Trailing ones too.
+call show $'a\nb' || true
+check "an unquoted \\n reaches the tool as \\n, not a newline" got 'X=[a\nb]'
+call show $'\'a\nb\'' || true
+check "a single-quoted \\n reaches the tool as \\n" got 'X=[a\nb]'
+call show $'zq9\n\n' || true
+check "trailing \\n's reach the tool" got 'X=[zq9\n\n]'
 for v in 'zq9 # note' 'zq9#note' 'zq9 x' ' zq9' 'zq9 '; do
     rc=0; call show "$v" || rc=$?
     check "unquoted '$v' is refused, naming the key" \
