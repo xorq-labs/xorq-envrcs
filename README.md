@@ -6,7 +6,8 @@ The root `.envrc` exports `$direnv_root`, then sources fragments from
 `.envrcs/`: two that rebuild `.gitignore` and create the untracked local
 files from their tracked templates, then the secrets and user layers. A
 fresh clone needs only `direnv allow`. `tests/test-fragments.sh` tests the
-first two.
+first two; `tests/test-sops-exec.sh` tests the per-call secrets wrapper,
+`.envrcs/sops-exec`.
 
 ## three layers
 
@@ -41,5 +42,6 @@ helpers, path conventions, and the concatenated-bundle design.
 PRs are squash-merged, the only method the repo allows. The squash title
 defaults to the PR title, or to the commit's subject on a one-commit branch,
 and the message to the branch's commit messages. No CI runs: before merging,
-run `bash tests/test-fragments.sh` on the head with main merged in. A pass
-says nothing about `.envrc` or the other fragments.
+run `bash tests/test-fragments.sh` and `bash tests/test-sops-exec.sh` on the
+head with main merged in. A pass says nothing about `.envrc` or the other
+fragments, `.envrc.sops` and `.envrc.kata` included.
