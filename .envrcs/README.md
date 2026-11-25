@@ -599,12 +599,31 @@ searches upward and builds the right flake, so a bare `use flake` *works*
 while watching the wrong lock file. The fragment passes `$direnv_root`
 explicitly *and* runs from it; the comment on those lines says what each one
 costs. The layout dir is the root `.envrc`'s job: it asks `direnv_layout_dir`
-once, from the root, and pins the function to the answer. So a direnvrc that
-keys layouts on `$PWD` (the direnv wiki's `~/.cache/direnv/layouts/` recipe)
-cannot give a fragment that stays in `.envrcs/` a second, `--envrcs`-keyed
-layout dir whose `{nix,flake}-profile*` GC roots nothing ever cleans up.
-Pulling the new `.envrc` does not remove dirs already created that way:
-delete `~/.cache/direnv/layouts/*--envrcs` once.
+once, from the root, and pins the function to the answer; the comment there
+says why. A checkout that loaded an `.envrc` from before that pin
+([#9](https://github.com/xorq-labs/xorq-envrcs/pull/9)) under a direnvrc
+keying layouts on `$PWD` — the direnv wiki's
+[cache-location recipes](https://github.com/direnv/direnv/wiki/Customizing-cache-location)
+— may hold a second layout dir, keyed on its `.envrcs/` path. Pulling does
+not remove it. In bash, from the checkout's root, run `cd -P .` first: direnv
+keys the dir on the path with symlinks resolved, and this makes `$PWD` that
+path. Then this lists it under the wiki's human-readable recipe (the name is
+the path's sha1, newline included, then the path with each non-alphanumeric
+as `-`, ending `…--envrcs`; for a path with non-ASCII characters, run it under
+the locale direnv ran in, since a C locale turns each byte of one into `-`):
+
+```sh
+ls -d "${XDG_CACHE_HOME:-$HOME/.cache}/direnv/layouts/$(sha1sum - <<< "$PWD/.envrcs" | head -c40)${PWD//[^a-zA-Z0-9]/-}--envrcs"
+```
+
+and this under its hashed recipe (the name is the path's sha1):
+
+```sh
+ls -d "${XDG_CACHE_HOME:-$HOME/.cache}/direnv/layouts/$(printf %s "$PWD/.envrcs" | sha1sum | cut -d ' ' -f 1)"
+```
+
+Delete what either prints, once, with `rm -rf`. The wiki's tmpfs variant
+keeps layouts under `$XDG_RUNTIME_DIR`, which a reboot clears.
 
 ## kenn
 
