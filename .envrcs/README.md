@@ -600,9 +600,25 @@ while watching the wrong lock file. The fragment passes `$direnv_root`
 explicitly *and* runs from it; the comment on those lines says what each one
 costs. The layout dir is the root `.envrc`'s job: it asks `direnv_layout_dir`
 once, from the root, and pins the function to the answer; the comment there
-says why. A checkout that loaded an older `.envrc` under a `$PWD`-keyed
-direnvrc may hold a stray `~/.cache/direnv/layouts/*--envrcs`; pulling does
-not remove it, so delete it once.
+says why. A checkout that loaded an `.envrc` from before that pin (#9) under
+a direnvrc keying layouts on `$PWD` — the direnv wiki's
+[cache-location recipes](https://github.com/direnv/direnv/wiki/Customizing-cache-location)
+— may hold a second layout dir, keyed on its `.envrcs/` path. Pulling does
+not remove it. From the checkout's root, in bash, this lists it under the
+wiki's human-readable recipe (the name ends in the path, `…--envrcs`):
+
+```sh
+ls -d "${XDG_CACHE_HOME:-$HOME/.cache}"/direnv/layouts/*"${PWD//[^a-zA-Z0-9]/-}--envrcs"
+```
+
+and this under its hashed recipe (the name is the path's sha1):
+
+```sh
+ls -d "${XDG_CACHE_HOME:-$HOME/.cache}/direnv/layouts/$(printf %s "$PWD/.envrcs" | sha1sum | cut -d ' ' -f 1)"
+```
+
+Delete what either prints, once, with `rm -rf`. The wiki's tmpfs variant
+keeps layouts under `$XDG_RUNTIME_DIR`, which a reboot clears.
 
 ## kenn
 
