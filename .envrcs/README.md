@@ -555,12 +555,14 @@ once in a terminal, which warms the cache for the agent shells after it. A
 
 **Quotes.** sops stores dotenv values verbatim, quotes included, where
 `direnv dotenv` strips and expands them. The wrapper strips one matching pair
-of `'` or `"` and does nothing else, so a value single-quoted per
+of `'` or `"` and changes nothing else, so a value single-quoted per
 [the rule above](#quote-values-containing-) reaches the tool exactly as
 `use_sops` delivers it — and an unquoted `$` is not truncated. A
 double-quoted value holding `\` or `$` is refused per call, naming the key:
 `direnv dotenv` would expand those and the wrapper does not, so the two paths
-would hand the tool different values.
+would hand the tool different values. So is an unquoted value holding
+whitespace or `#`: `direnv dotenv` ends an unquoted value at `#`, trims
+the whitespace around it, and refuses the line when whitespace is inside it.
 
 **Keep per-call keys out of ambient bundles.** A bundle that is also `use`d
 exports every key it holds, and the wrapper changes nothing about that. Put
