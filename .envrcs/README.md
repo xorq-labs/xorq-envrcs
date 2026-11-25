@@ -607,10 +607,12 @@ keying layouts on `$PWD` — the direnv wiki's
 — may hold a second layout dir, keyed on its `.envrcs/` path. Pulling does
 not remove it. From the checkout's root, entered by the same path you load it
 from (not through a symlink to it, or the other way round), in bash, this
-lists it under the wiki's human-readable recipe (the name ends in the path, `…--envrcs`):
+lists it under the wiki's human-readable recipe (the name is the path's sha1,
+newline included, then the path with each non-alphanumeric as `-`, ending
+`…--envrcs`):
 
 ```sh
-ls -d "${XDG_CACHE_HOME:-$HOME/.cache}"/direnv/layouts/*"${PWD//[^a-zA-Z0-9]/-}--envrcs"
+ls -d "${XDG_CACHE_HOME:-$HOME/.cache}/direnv/layouts/$(sha1sum - <<< "$PWD/.envrcs" | head -c40)${PWD//[^a-zA-Z0-9]/-}--envrcs"
 ```
 
 and this under its hashed recipe (the name is the path's sha1):
