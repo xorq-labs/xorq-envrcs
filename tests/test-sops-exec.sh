@@ -2,8 +2,9 @@
 # Tests .envrcs/sops-exec, the per-call wrapper sops_wrap links, called
 # directly: each case lays out a wrapper directory by hand (the link and its
 # .sops-wrap) rather than through sops_wrap, so direnv is not needed. `sops`
-# is a stub that prints $STUB_VALUE as the decrypted value, so no key and no
-# real bundle are involved; values here are dummies. Needs bash, sed,
+# is a stub that prints $STUB_VALUE as the decrypted value and exits
+# $STUB_RC (default 0), so no key and no real bundle are involved; values
+# here are dummies. Needs bash, sed,
 # timeout, and a `true` on disk (`type -P true`), not only the builtin.
 # Not a full harness for sops_wrap: that is kata xorq-envrcs#2eg8.
 #
@@ -21,7 +22,7 @@ mkdir -p "$bin"
 # none (sops 3.13.3, od -c). A value holding `\n` is stored as those two
 # characters and printed with a real newline, as sops decodes it.
 # shellcheck disable=SC2016 # for the stub to expand
-printf '#!/usr/bin/env bash\nprintf "%%s" "$STUB_VALUE"\n' >"$bin/sops"
+printf '#!/usr/bin/env bash\nprintf "%%s" "$STUB_VALUE"\nexit "${STUB_RC:-0}"\n' >"$bin/sops"
 # shellcheck disable=SC2016 # for the stub to expand
 printf '#!/usr/bin/env bash\nprintf "X=[%%s]\\n" "${X-unset}"\n' >"$bin/show"
 chmod +x "$bin/sops" "$bin/show"
@@ -91,6 +92,21 @@ rc=0
 PATH=$work/w/show:$late:$bin:$PATH STUB_VALUE=zq9 \
     "$work/w/show/show" </dev/null >"$work/out" 2>"$work/err" || rc=$?
 check "a tool with the marker text on a later line is run" got 'late-ran'
+
+# --- the decrypt ---
+
+# sops fails after printing something: refused, and what it printed never
+# reaches the tool (a `;` for the `&&` before the sentinel, or a missing
+# exit, would deliver it).
+rc=0; STUB_RC=1 call show zq9 || rc=$?
+check "a failing decrypt is refused, naming the key" \
+    refused "$rc" 'could not decrypt K from /dev/null' 'zq9'
+# Only the one trailing sentinel x comes off, not everything from an x on.
+call show abx123 || true
+check "a value holding x reaches the tool whole" got 'X=[abx123]'
+rc=0; call show '' || rc=$?
+check "an empty value is refused, naming the key" \
+    refused "$rc" 'K in /dev/null is empty' 'X=['
 
 # --- quotes (README, "Quotes"): each case below is delivered as use_sops delivers it, or refused ---
 
