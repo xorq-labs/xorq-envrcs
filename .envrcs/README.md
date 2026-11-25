@@ -605,11 +605,12 @@ says why. A checkout that loaded an `.envrc` from before that pin
 keying layouts on `$PWD` — the direnv wiki's
 [cache-location recipes](https://github.com/direnv/direnv/wiki/Customizing-cache-location)
 — may hold a second layout dir, keyed on its `.envrcs/` path. Pulling does
-not remove it. From the checkout's root, entered by the same path you load it
-from (not through a symlink to it, or the other way round), in bash, this
-lists it under the wiki's human-readable recipe (the name is the path's sha1,
-newline included, then the path with each non-alphanumeric as `-`, ending
-`…--envrcs`):
+not remove it. In bash, from the checkout's root, run `cd -P .` first: direnv
+keys the dir on the path with symlinks resolved, and this makes `$PWD` that
+path. Then this lists it under the wiki's human-readable recipe (the name is
+the path's sha1, newline included, then the path with each non-alphanumeric
+as `-`, ending `…--envrcs`; for a path with non-ASCII characters, run it under
+the locale direnv ran in, since a C locale turns each byte of one into `-`):
 
 ```sh
 ls -d "${XDG_CACHE_HOME:-$HOME/.cache}/direnv/layouts/$(sha1sum - <<< "$PWD/.envrcs" | head -c40)${PWD//[^a-zA-Z0-9]/-}--envrcs"
